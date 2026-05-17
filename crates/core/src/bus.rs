@@ -145,6 +145,15 @@ impl Bus {
         }
     }
 
+    /// Write the STAT register on behalf of the PPU.
+    ///
+    /// Unlike CPU writes (which are masked to bits 3–6), the PPU may update
+    /// all bits of STAT including the read-only status fields (bits 0–2).
+    /// Called exclusively from `PPU::update_stat`.
+    pub fn write_stat_ppu(&mut self, value: u8) {
+        self.io[0x41] = value;
+    }
+
     /// Write a byte to the given address.
     pub fn write(&mut self, addr: u16, value: u8) {
         match addr {
@@ -171,6 +180,12 @@ impl Bus {
 
             // IO Registers — special handling for timer, serial and BOOT registers
             0xFF04..=0xFF07 => self.timer.write(addr, value),
+            // STAT (0xFF41) — bits 0–2 are read-only (set by PPU); only bits
+            // 3–6 (interrupt-enable flags) are writable by the CPU.
+            0xFF41 => {
+                let current = self.io[0x41];
+                self.io[0x41] = (current & 0x07) | (value & 0x78);
+            }
             // SC (0xFF02) — Serial Transfer Control: when written with 0x81
             // (transfer-start bit + internal-clock bit), capture SB and queue
             // the byte for GameBoy::serial_output.

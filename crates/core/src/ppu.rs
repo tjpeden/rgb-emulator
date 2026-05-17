@@ -101,6 +101,9 @@ fn shade_to_grey(shade: u8) -> u8 {
 ///   transparency and priority rules.
 /// - **Palettes**: BGP (`0xFF47`) for background/window; OBP0/OBP1
 ///   (`0xFF48`/`0xFF49`) for sprites.
+/// - **STAT interrupt**: edge-triggered on the combined STAT interrupt line
+///   (OR of all enabled conditions). Only fires on a 0→1 rising edge (STAT
+///   blocking). Sources: Mode 0/1/2 transitions and LYC=LY coincidence.
 pub struct PPU {
     // ── Mode state machine ──────────────────────────────────────────────────
     /// Current scanline (0–153). Written to `LY` (`0xFF44`) on the bus.
@@ -109,6 +112,13 @@ pub struct PPU {
     dot: u32,
     /// Active PPU mode. Reflected in the low two bits of `STAT` (`0xFF41`).
     mode: PpuMode,
+    /// Previous state of the combined STAT interrupt line (for edge detection).
+    ///
+    /// The STAT interrupt (`IF` bit 1) is edge-triggered: it fires only on a
+    /// 0→1 transition of the OR of all enabled STAT conditions. This prevents
+    /// a second interrupt from firing when a second condition becomes true
+    /// while the line is already high ("STAT blocking" behaviour).
+    stat_irq_line: bool,
 
     // ── Background / window fetcher ─────────────────────────────────────────
     /// Current fetcher state.
@@ -184,6 +194,7 @@ impl PPU {
             ly: 0,
             dot: 0,
             mode: PpuMode::OAMScan,
+            stat_irq_line: false,
 
             fetcher_state: FetcherState::ReadTileId,
             fetcher_dot: 0,
@@ -240,8 +251,10 @@ impl PPU {
             self.dot = 0;
             self.mode = PpuMode::HBlank;
             bus.write(0xFF44, 0);
+            // Clear mode bits and LYC=LY flag; drive interrupt line low.
             let stat = bus.read(0xFF41);
-            bus.write(0xFF41, stat & !0x03);
+            bus.write_stat_ppu(stat & !0x07);
+            self.stat_irq_line = false;
             return false;
         }
 
@@ -302,12 +315,61 @@ impl PPU {
             self.tick_fifo(bus);
         }
 
-        // Reflect the current mode in the two low bits of STAT (0xFF41).
-        let stat = bus.read(0xFF41);
-        bus.write(0xFF41, (stat & !0x03) | (self.mode as u8));
+        // Update STAT register (mode bits + LYC=LY flag) and fire STAT
+        // interrupt on the rising edge of the combined interrupt line.
+        self.update_stat(bus);
 
         // VBlank interrupt: assert exactly once on the Mode 1 transition.
         prev_mode != PpuMode::VBlank && new_mode == PpuMode::VBlank
+    }
+
+    // ── STAT register and interrupt line ────────────────────────────────────
+
+    /// Recompute STAT (`0xFF41`), update the LYC=LY coincidence flag, and fire
+    /// the LCD STAT interrupt (`IF` bit 1) on a rising edge of the combined
+    /// STAT interrupt line.
+    ///
+    /// # STAT register layout
+    ///
+    /// | Bits | Field                    | Access |
+    /// |------|--------------------------|--------|
+    /// | 1–0  | PPU mode (0–3)           | R      |
+    /// | 2    | LYC=LY coincidence flag  | R      |
+    /// | 3    | Mode 0 interrupt enable  | R/W    |
+    /// | 4    | Mode 1 interrupt enable  | R/W    |
+    /// | 5    | Mode 2 interrupt enable  | R/W    |
+    /// | 6    | LYC=LY interrupt enable  | R/W    |
+    ///
+    /// # STAT blocking (edge-triggered behaviour)
+    ///
+    /// The STAT interrupt fires **only** on a 0→1 transition of the combined
+    /// interrupt line (OR of all enabled+active conditions). While the line
+    /// stays high, no further interrupt is requested, preventing a flood of
+    /// interrupts when multiple conditions are simultaneously true.
+    fn update_stat(&mut self, bus: &mut Bus) {
+        let lyc = bus.read(0xFF45);
+        let lyc_eq = self.ly == lyc;
+
+        // Reconstruct STAT: preserve interrupt-enable bits (3–6), overwrite
+        // the read-only status bits (0–2).
+        let stat_rw = bus.read(0xFF41) & 0x78; // bits 3–6 only (bit 7 unused)
+        let new_stat = stat_rw
+            | (self.mode as u8)              // bits 1–0: current mode
+            | if lyc_eq { 0x04 } else { 0x00 }; // bit 2: LYC=LY flag
+        bus.write_stat_ppu(new_stat);
+
+        // Compute the new STAT interrupt line (OR of all enabled+active sources).
+        let stat_line = (new_stat & 0x08 != 0 && self.mode == PpuMode::HBlank)
+            || (new_stat & 0x10 != 0 && self.mode == PpuMode::VBlank)
+            || (new_stat & 0x20 != 0 && self.mode == PpuMode::OAMScan)
+            || (new_stat & 0x40 != 0 && lyc_eq);
+
+        // Edge-triggered: request STAT interrupt only on 0→1 transition.
+        if stat_line && !self.stat_irq_line {
+            let if_val = bus.read(0xFF0F);
+            bus.write(0xFF0F, if_val | 0x02); // IF bit 1 = LCD STAT
+        }
+        self.stat_irq_line = stat_line;
     }
 
     /// Initialise the pixel pipeline at the start of Mode 3.
