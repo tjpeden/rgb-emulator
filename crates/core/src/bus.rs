@@ -186,6 +186,18 @@ impl Bus {
                 let current = self.io[0x41];
                 self.io[0x41] = (current & 0x07) | (value & 0x78);
             }
+            // DMA (0xFF46) — OAM DMA transfer.
+            // Writing XX triggers an immediate copy of 160 bytes from
+            // XX00–XX9F into OAM (0xFE00–0xFE9F).
+            // TODO: cycle-accurate DMA
+            0xFF46 => {
+                self.io[0x46] = value;
+                let src_base = (value as u16) << 8;
+                for i in 0..0xA0u16 {
+                    let byte = self.read(src_base + i);
+                    self.oam[i as usize] = byte;
+                }
+            }
             // SC (0xFF02) — Serial Transfer Control: when written with 0x81
             // (transfer-start bit + internal-clock bit), capture SB and queue
             // the byte for GameBoy::serial_output.
