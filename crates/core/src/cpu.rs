@@ -168,6 +168,21 @@ impl CPU {
     // Instruction execution
     // -------------------------------------------------------------------------
 
+    /// Push a 16-bit value onto the stack.
+    fn push_u16(&mut self, bus: &mut Bus, value: u16) {
+        self.sp = self.sp.wrapping_sub(2);
+        bus.write(self.sp.wrapping_add(1), (value >> 8) as u8);
+        bus.write(self.sp, value as u8);
+    }
+
+    /// Pop a 16-bit value from the stack.
+    fn pop_u16(&mut self, bus: &mut Bus) -> u16 {
+        let lo = bus.read(self.sp) as u16;
+        let hi = bus.read(self.sp.wrapping_add(1)) as u16;
+        self.sp = self.sp.wrapping_add(2);
+        hi << 8 | lo
+    }
+
     /// Fetch one byte from [PC] and advance PC.
     fn fetch(&mut self, bus: &mut Bus) -> u8 {
         let b = bus.read(self.pc);
@@ -277,9 +292,57 @@ impl CPU {
             0xE2 => { bus.write(0xFF00 | self.c as u16, self.a); 8 }
             0xF2 => { self.a = bus.read(0xFF00 | self.c as u16); 8 }
 
+            // LD rr, nn — load immediate 16-bit
+            0x01 => { let nn = self.fetch_u16(bus); self.set_bc(nn); 12 }
+            0x11 => { let nn = self.fetch_u16(bus); self.set_de(nn); 12 }
+            0x21 => { let nn = self.fetch_u16(bus); self.set_hl(nn); 12 }
+            0x31 => { let nn = self.fetch_u16(bus); self.sp = nn; 12 }
+
+            // LD (nn), SP
+            0x08 => {
+                let nn = self.fetch_u16(bus);
+                bus.write(nn, self.sp as u8);
+                bus.write(nn.wrapping_add(1), (self.sp >> 8) as u8);
+                20
+            }
+
+            // LD SP, HL
+            0xF9 => { self.sp = self.hl(); 8 }
+
+            // LD HL, SP+e (LDHL SP, e)
+            0xF8 => {
+                let e = self.fetch(bus) as i8 as i16;
+                let sp = self.sp as i16;
+                let result = sp.wrapping_add(e);
+                let sp_u = self.sp;
+                let e_u = e as u16;
+                self.set_zero(false);
+                self.set_subtract(false);
+                self.set_half_carry((sp_u ^ e_u ^ (result as u16)) & 0x10 != 0);
+                self.set_carry((sp_u ^ e_u ^ (result as u16)) & 0x100 != 0);
+                self.set_hl(result as u16);
+                12
+            }
+
+            // PUSH rr
+            0xC5 => { let v = self.bc(); self.push_u16(bus, v); 16 }
+            0xD5 => { let v = self.de(); self.push_u16(bus, v); 16 }
+            0xE5 => { let v = self.hl(); self.push_u16(bus, v); 16 }
+            0xF5 => { let v = self.af(); self.push_u16(bus, v); 16 }
+
+            // POP rr
+            0xC1 => { let v = self.pop_u16(bus); self.set_bc(v); 12 }
+            0xD1 => { let v = self.pop_u16(bus); self.set_de(v); 12 }
+            0xE1 => { let v = self.pop_u16(bus); self.set_hl(v); 12 }
+            0xF1 => {
+                let v = self.pop_u16(bus);
+                self.a = (v >> 8) as u8;
+                self.f = (v as u8) & 0xF0;
+                12
+            }
+
             // LD r, r' block (0x40–0x7F), excluding HALT (0x76)
-            0x40..=0x7F => {
-                if opcode == 0x76 {
+            0x40..=0x7F => {                if opcode == 0x76 {
                     // HALT — not yet implemented
                     panic!("Unimplemented opcode: {:#04X}", opcode);
                 }
