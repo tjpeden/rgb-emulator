@@ -630,6 +630,65 @@ impl CPU {
                 4
             }
 
+            // INC rr — 16-bit increment, no flags affected
+            0x03 => { let v = self.bc().wrapping_add(1); self.set_bc(v); 8 }
+            0x13 => { let v = self.de().wrapping_add(1); self.set_de(v); 8 }
+            0x23 => { let v = self.hl().wrapping_add(1); self.set_hl(v); 8 }
+            0x33 => { self.sp = self.sp.wrapping_add(1); 8 }
+
+            // DEC rr — 16-bit decrement, no flags affected
+            0x0B => { let v = self.bc().wrapping_sub(1); self.set_bc(v); 8 }
+            0x1B => { let v = self.de().wrapping_sub(1); self.set_de(v); 8 }
+            0x2B => { let v = self.hl().wrapping_sub(1); self.set_hl(v); 8 }
+            0x3B => { self.sp = self.sp.wrapping_sub(1); 8 }
+
+            // ADD HL, rr — N=0, H=carry from bit 11, C=carry from bit 15; Z unaffected
+            0x09 => {
+                let hl = self.hl(); let rr = self.bc();
+                self.set_subtract(false);
+                self.set_half_carry((hl & 0x0FFF) + (rr & 0x0FFF) > 0x0FFF);
+                self.set_carry((hl as u32) + (rr as u32) > 0xFFFF);
+                self.set_hl(hl.wrapping_add(rr));
+                8
+            }
+            0x19 => {
+                let hl = self.hl(); let rr = self.de();
+                self.set_subtract(false);
+                self.set_half_carry((hl & 0x0FFF) + (rr & 0x0FFF) > 0x0FFF);
+                self.set_carry((hl as u32) + (rr as u32) > 0xFFFF);
+                self.set_hl(hl.wrapping_add(rr));
+                8
+            }
+            0x29 => {
+                let hl = self.hl(); let rr = hl;
+                self.set_subtract(false);
+                self.set_half_carry((hl & 0x0FFF) + (rr & 0x0FFF) > 0x0FFF);
+                self.set_carry((hl as u32) + (rr as u32) > 0xFFFF);
+                self.set_hl(hl.wrapping_add(rr));
+                8
+            }
+            0x39 => {
+                let hl = self.hl(); let rr = self.sp;
+                self.set_subtract(false);
+                self.set_half_carry((hl & 0x0FFF) + (rr & 0x0FFF) > 0x0FFF);
+                self.set_carry((hl as u32) + (rr as u32) > 0xFFFF);
+                self.set_hl(hl.wrapping_add(rr));
+                8
+            }
+
+            // ADD SP, e — Z=0, N=0, H=carry from bit 3, C=carry from bit 7
+            0xE8 => {
+                let e = self.fetch(bus) as i8;
+                let sp_lo = self.sp as u8;
+                let e_u8 = e as u8;
+                self.set_zero(false);
+                self.set_subtract(false);
+                self.set_half_carry((sp_lo & 0x0F) + (e_u8 & 0x0F) > 0x0F);
+                self.set_carry((sp_lo as u16) + (e_u8 as u16) > 0xFF);
+                self.sp = self.sp.wrapping_add(e as i16 as u16);
+                16
+            }
+
             _ => panic!("Unimplemented opcode: {:#04X}", opcode),
         }
     }
