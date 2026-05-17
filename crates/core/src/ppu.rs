@@ -39,9 +39,49 @@ enum FetcherState {
     Push,
 }
 
+/// OAM sprite entry collected during the Mode 2 scan.
+#[derive(Debug, Clone, Copy)]
+struct Sprite {
+    /// OAM byte 0: sprite top screen row = `y − 16`.
+    y: u8,
+    /// OAM byte 1: sprite left screen column = `x − 8`.
+    x: u8,
+    /// OAM byte 2: tile index (bit 0 is ignored in 8×16 mode).
+    tile: u8,
+    /// OAM byte 3 attribute flags:
+    ///   bit 7 — BG/Win priority (sprite is drawn behind BG colors 1–3 when set)
+    ///   bit 6 — Y flip
+    ///   bit 5 — X flip
+    ///   bit 4 — palette select (0 = OBP0, 1 = OBP1)
+    flags: u8,
+}
+
+/// A single pixel slot in the sprite FIFO.
+#[derive(Debug, Clone, Copy)]
+struct SpriteFifoPixel {
+    /// Raw 2-bit color index (0 = transparent).
+    color_index: u8,
+    /// Palette selector: 0 = OBP0 (`0xFF48`), 1 = OBP1 (`0xFF49`).
+    palette: u8,
+    /// `true` when the sprite should appear behind BG/Win color indices 1–3.
+    bg_priority: bool,
+}
+
+/// Convert a 2-bit DMG shade index to an 8-bit greyscale value.
+#[inline]
+fn shade_to_grey(shade: u8) -> u8 {
+    match shade {
+        0 => 0xFF, // white
+        1 => 0xAA, // light grey
+        2 => 0x55, // dark grey
+        3 => 0x00, // black
+        _ => unreachable!(),
+    }
+}
+
 /// DMG Pixel Processing Unit.
 ///
-/// Implements the full FIFO-based background and window pixel pipeline:
+/// Implements the full FIFO-based background, window, and sprite pixel pipeline:
 ///
 /// - **Fetcher state machine** (one step per 2 T-cycles): ReadTileId →
 ///   ReadDataLo → ReadDataHi → Push.
@@ -52,8 +92,15 @@ enum FetcherState {
 ///   line where `LY ≥ WY` and the window is enabled (LCDC bit 5). On
 ///   activation the fetcher is reset and switches to the window tile map.
 ///   Maintains its own internal line counter (independent of LY).
-/// - **BGP palette**: the 2-bit raw color indices are mapped through the
-///   `BGP` register (`0xFF47`) before being written to the RGBA framebuffer.
+/// - **OAM scan (Mode 2)**: up to 10 sprites whose Y range covers `LY` are
+///   collected into a per-scanline sprite buffer sorted by X position (lower
+///   OAM index wins ties).
+/// - **Sprite FIFO**: sprite tile data is fetched and loaded into the sprite
+///   FIFO when the background output X reaches a sprite's left screen edge.
+///   Sprite pixels are mixed over background pixels according to the
+///   transparency and priority rules.
+/// - **Palettes**: BGP (`0xFF47`) for background/window; OBP0/OBP1
+///   (`0xFF48`/`0xFF49`) for sprites.
 pub struct PPU {
     // ── Mode state machine ──────────────────────────────────────────────────
     /// Current scanline (0–153). Written to `LY` (`0xFF44`) on the bus.
@@ -84,6 +131,19 @@ pub struct PPU {
     // ── Background FIFO ─────────────────────────────────────────────────────
     /// Queue of raw 2-bit color indices (values 0–3).
     bg_fifo: VecDeque<u8>,
+
+    // ── Sprite pipeline ──────────────────────────────────────────────────────
+    /// Up to 10 sprites whose Y range covers the current scanline, sorted by
+    /// X position (lower OAM index wins ties at equal X).
+    sprite_buffer: Vec<Sprite>,
+    /// Queue of sprite pixels for the current scanline. Each slot corresponds
+    /// to an upcoming screen X position. Slots are mixed: lower-OAM-index
+    /// sprites win over higher-OAM-index sprites (first write wins because we
+    /// process sprites in priority order and only overwrite transparent slots).
+    sprite_fifo: VecDeque<SpriteFifoPixel>,
+    /// Index into `sprite_buffer` of the next sprite to check / load into the
+    /// sprite FIFO. Advanced as sprites are triggered during Mode 3.
+    sprite_fetch_cursor: usize,
 
     // ── Scanline output ──────────────────────────────────────────────────────
     /// Next pixel X position to be written to the framebuffer (0–159).
@@ -134,6 +194,10 @@ impl PPU {
             fetching_window: false,
 
             bg_fifo: VecDeque::with_capacity(16),
+
+            sprite_buffer: Vec::with_capacity(10),
+            sprite_fifo: VecDeque::with_capacity(8),
+            sprite_fetch_cursor: 0,
 
             lx: 0,
             scx_discard: 0,
@@ -247,18 +311,72 @@ impl PPU {
     }
 
     /// Initialise the pixel pipeline at the start of Mode 3.
+    ///
+    /// Performs the OAM scan (collecting sprites that cover `LY`), resets the
+    /// background fetcher, and initialises fine-scroll discard.
     fn begin_scanline(&mut self, bus: &Bus) {
         self.bg_fifo.clear();
+        self.sprite_fifo.clear();
         self.fetcher_state = FetcherState::ReadTileId;
         self.fetcher_dot = 0;
         self.fetch_x = 0;
         self.lx = 0;
         self.window_active = false;
         self.fetching_window = false;
+        self.sprite_fetch_cursor = 0;
 
         // SCX fine-scroll: discard the first (SCX % 8) pixels.
         let scx = bus.read(0xFF43);
         self.scx_discard = scx % 8;
+
+        // OAM scan: collect up to 10 sprites visible on this scanline.
+        let lcdc = bus.read(0xFF40);
+        self.scan_oam(bus, lcdc);
+    }
+
+    // ── OAM scan ─────────────────────────────────────────────────────────────
+
+    /// Scan all 40 OAM entries and collect up to 10 sprites whose Y range
+    /// covers the current `LY`, sorted by X position (OAM order breaks ties).
+    ///
+    /// Sprites with X = 0 are excluded (they are fully off-screen left and
+    /// would never produce visible pixels).
+    fn scan_oam(&mut self, bus: &Bus, lcdc: u8) {
+        self.sprite_buffer.clear();
+
+        let sprite_height: u8 = if lcdc & 0x04 != 0 { 16 } else { 8 };
+
+        for i in 0..40usize {
+            if self.sprite_buffer.len() >= 10 {
+                break;
+            }
+
+            let base = 0xFE00u16 + (i as u16) * 4;
+            let y = bus.read(base);
+            let x = bus.read(base + 1);
+            let tile = bus.read(base + 2);
+            let flags = bus.read(base + 3);
+
+            // Sprites with X = 0 are invisible.
+            if x == 0 {
+                continue;
+            }
+
+            // Determine if this sprite covers the current scanline.
+            // Sprite top screen row = y − 16.  We use 16-bit arithmetic to
+            // avoid underflow when y < 16 (sprite partially above the screen).
+            let ly16 = self.ly as u16 + 16;
+            let y16 = y as u16;
+            if ly16 < y16 || ly16 >= y16 + sprite_height as u16 {
+                continue;
+            }
+
+            self.sprite_buffer.push(Sprite { y, x, tile, flags });
+        }
+
+        // Sort by X; OAM order is already preserved by the iteration, so a
+        // stable sort gives "lower OAM index wins" for equal X values.
+        self.sprite_buffer.sort_by_key(|s| s.x);
     }
 
     // ── Fetcher ──────────────────────────────────────────────────────────────
@@ -349,12 +467,124 @@ impl PPU {
         }
     }
 
+    // ── Sprite fetcher ───────────────────────────────────────────────────────
+
+    /// Check if any sprites in the buffer trigger at the current `lx` position
+    /// and, if so, fetch their tile data and load it into the sprite FIFO.
+    ///
+    /// Sprites are processed in sorted order (lowest X first, OAM index breaks
+    /// ties). The sprite FIFO mixing rule is: only transparent slots
+    /// (`color_index == 0`) are overwritten, so the first sprite to write a
+    /// non-transparent pixel to a given slot wins.
+    fn load_sprites_at_lx(&mut self, bus: &Bus, lcdc: u8) {
+        while self.sprite_fetch_cursor < self.sprite_buffer.len() {
+            let sprite = self.sprite_buffer[self.sprite_fetch_cursor];
+            // A sprite triggers when `lx` reaches its left screen edge.
+            // sprite.x − 8 is the left screen column; saturating_sub gives 0
+            // for sprites that start off the left edge (x < 8).
+            let trigger_lx = sprite.x.saturating_sub(8);
+            if trigger_lx > self.lx {
+                // Sprites are sorted by X; nothing else can trigger yet.
+                break;
+            }
+            self.fetch_sprite_into_fifo(bus, lcdc, sprite);
+            self.sprite_fetch_cursor += 1;
+        }
+    }
+
+    /// Fetch one sprite's tile row and mix it into the sprite FIFO.
+    ///
+    /// Handles:
+    /// - Y flip / X flip via sprite attribute flags.
+    /// - 8×16 sprite mode (LCDC bit 2): tile bit 0 is ignored; upper tile
+    ///   uses `tile & 0xFE`, lower tile uses `(tile & 0xFE) | 0x01`.
+    /// - Left-clipping for sprites whose left edge is off-screen (x < 8).
+    /// - Priority mixing: a slot in the sprite FIFO is only overwritten if its
+    ///   current `color_index` is 0 (transparent).
+    fn fetch_sprite_into_fifo(&mut self, bus: &Bus, lcdc: u8, sprite: Sprite) {
+        let sprite_height: u8 = if lcdc & 0x04 != 0 { 16 } else { 8 };
+        let x_flip = sprite.flags & 0x20 != 0;
+        let y_flip = sprite.flags & 0x40 != 0;
+        let palette = (sprite.flags >> 4) & 1;
+        let bg_priority = sprite.flags & 0x80 != 0;
+
+        // Fine Y within the sprite tile (0..sprite_height−1).
+        // Use signed arithmetic so sprites that start above the screen
+        // (y < 16) are handled correctly.
+        let sprite_top: i16 = sprite.y as i16 - 16;
+        let fine_y = (self.ly as i16 - sprite_top) as u8; // guaranteed 0..sprite_height-1
+        let fine_y = if y_flip {
+            sprite_height - 1 - fine_y
+        } else {
+            fine_y
+        };
+
+        // In 8×16 mode, bit 0 of the tile index is forced:
+        //   upper 8 rows → tile & 0xFE
+        //   lower 8 rows → (tile & 0xFE) | 0x01
+        let tile_index = if sprite_height == 16 {
+            let base = sprite.tile & 0xFE;
+            if fine_y < 8 { base } else { base | 0x01 }
+        } else {
+            sprite.tile
+        };
+        let fine_y_in_tile = fine_y % 8;
+
+        // Sprites always use $8000 unsigned tile data addressing.
+        let tile_base = 0x8000u16 + tile_index as u16 * 16;
+        let row_addr = tile_base + fine_y_in_tile as u16 * 2;
+        let lo = bus.read(row_addr);
+        let hi = bus.read(row_addr + 1);
+
+        // Number of left-side pixels to clip (sprite partially off-screen left).
+        // For sprite.x in 1..7: clip_count = 8 − sprite.x pixels are clipped.
+        // For sprite.x >= 8:    clip_count = 0.
+        let clip_count = 8usize.saturating_sub(sprite.x as usize);
+        let visible = 8 - clip_count;
+
+        // Ensure the sprite FIFO has enough slots to hold all visible pixels.
+        // Slots past the current FIFO length are initialised to transparent.
+        while self.sprite_fifo.len() < visible {
+            self.sprite_fifo.push_back(SpriteFifoPixel {
+                color_index: 0,
+                palette: 0,
+                bg_priority: false,
+            });
+        }
+
+        // Write each visible pixel into the sprite FIFO (mixing: only overwrite
+        // transparent slots so the highest-priority sprite already loaded wins).
+        for i in clip_count..8usize {
+            // `i` counts from the left of the tile (0 = leftmost pixel).
+            // Map to the tile data bit: bit 7 = leftmost, bit 0 = rightmost.
+            let bit = if x_flip { i as u8 } else { 7 - i as u8 };
+            let color_lo = (lo >> bit) & 1;
+            let color_hi = (hi >> bit) & 1;
+            let color_index = (color_hi << 1) | color_lo;
+
+            let fifo_pos = i - clip_count;
+            if self.sprite_fifo[fifo_pos].color_index == 0 {
+                self.sprite_fifo[fifo_pos] = SpriteFifoPixel {
+                    color_index,
+                    palette,
+                    bg_priority,
+                };
+            }
+        }
+    }
+
     // ── FIFO output ──────────────────────────────────────────────────────────
 
-    /// Pop one pixel from the FIFO and write it to the framebuffer.
+    /// Pop one pixel from the background FIFO, mix with the sprite FIFO, and
+    /// write the result to the framebuffer.
     ///
-    /// Discards fine-scroll pixels before writing. Applies the `BGP` palette
-    /// to convert the 2-bit color index to a DMG greyscale shade.
+    /// Discards fine-scroll pixels before writing. Applies `BGP` to background
+    /// pixels and `OBP0`/`OBP1` to sprite pixels.
+    ///
+    /// Sprite / background mixing rules:
+    /// 1. Sprite pixel is transparent (`color_index == 0`) → use background.
+    /// 2. Sprite `bg_priority` flag set and BG `color_index ≠ 0` → use background.
+    /// 3. Otherwise → use sprite pixel.
     fn tick_fifo(&mut self, bus: &Bus) {
         if self.lx >= 160 {
             return;
@@ -363,27 +593,53 @@ impl PPU {
         // Check whether the window should activate at this pixel position.
         self.check_window_activation(bus);
 
-        let Some(raw) = self.bg_fifo.pop_front() else {
+        // Load any sprites whose left edge has been reached.
+        let lcdc = bus.read(0xFF40);
+        if lcdc & 0x02 != 0 {
+            // OBJ enable (LCDC bit 1).
+            self.load_sprites_at_lx(bus, lcdc);
+        }
+
+        let Some(bg_raw) = self.bg_fifo.pop_front() else {
             return; // FIFO is empty; fetcher hasn't caught up yet.
         };
 
         // Discard fine-scroll pixels at the start of the scanline.
+        // Sprite FIFO is NOT consumed during discard — sprite X positions are
+        // in screen coordinates and are unaffected by SCX fine-scroll.
         if self.scx_discard > 0 {
             self.scx_discard -= 1;
             return;
         }
 
-        // Map the 2-bit color index through the BGP palette register.
-        let bgp = bus.read(0xFF47);
-        let shade = (bgp >> (raw * 2)) & 0x03;
+        // Retrieve the sprite pixel (if any) for this screen position.
+        let sprite_pixel = self.sprite_fifo.pop_front();
 
-        // Convert DMG shade to an 8-bit greyscale value.
-        let grey: u8 = match shade {
-            0 => 0xFF, // white
-            1 => 0xAA, // light grey
-            2 => 0x55, // dark grey
-            3 => 0x00, // black
-            _ => unreachable!(),
+        // Apply BGP palette to the background pixel.
+        let bgp = bus.read(0xFF47);
+        let bg_shade = (bgp >> (bg_raw * 2)) & 0x03;
+
+        // Determine the final greyscale value via mixing rules.
+        let grey = if let Some(sp) = sprite_pixel {
+            if sp.color_index == 0 {
+                // Sprite pixel is transparent: show background.
+                shade_to_grey(bg_shade)
+            } else if sp.bg_priority && bg_raw != 0 {
+                // Sprite behind BG/Win: background color index is non-zero,
+                // so the background pixel wins.
+                shade_to_grey(bg_shade)
+            } else {
+                // Sprite pixel wins. Apply OBP0 or OBP1.
+                let obp = if sp.palette == 0 {
+                    bus.read(0xFF48) // OBP0
+                } else {
+                    bus.read(0xFF49) // OBP1
+                };
+                let shade = (obp >> (sp.color_index * 2)) & 0x03;
+                shade_to_grey(shade)
+            }
+        } else {
+            shade_to_grey(bg_shade)
         };
 
         let offset = (self.ly as usize * FB_WIDTH + self.lx as usize) * 4;
