@@ -27,6 +27,8 @@ pub struct CPU {
     pub ime: bool,
     /// Set when `HALT` is executed; cleared on interrupt.
     pub halted: bool,
+    /// Pending EI: IME will be set at the start of the next instruction.
+    pub ei_pending: bool,
 }
 
 impl CPU {
@@ -59,6 +61,7 @@ impl CPU {
             pc: 0x0100,
             ime: false,
             halted: false,
+            ei_pending: false,
         }
     }
 
@@ -80,6 +83,7 @@ impl CPU {
             pc: 0x0000,
             ime: false,
             halted: false,
+            ei_pending: false,
         }
     }
 
@@ -316,6 +320,12 @@ impl CPU {
 
     /// Execute one instruction and return the number of T-cycles consumed.
     pub fn step(&mut self, bus: &mut Bus) -> u32 {
+        // EI delay: enable IME before executing this instruction if ei_pending.
+        if self.ei_pending {
+            self.ime = true;
+            self.ei_pending = false;
+        }
+
         let opcode = self.fetch(bus);
 
         match opcode {
@@ -429,8 +439,9 @@ impl CPU {
             // LD r, r' block (0x40–0x7F), excluding HALT (0x76)
             0x40..=0x7F => {
                 if opcode == 0x76 {
-                    // HALT — not yet implemented
-                    panic!("Unimplemented opcode: {:#04X}", opcode);
+                    // HALT
+                    self.halted = true;
+                    return 4;
                 }
                 let dst = (opcode >> 3) & 0x07;
                 let src = opcode & 0x07;
@@ -688,6 +699,108 @@ impl CPU {
                 self.sp = self.sp.wrapping_add(e as i16 as u16);
                 16
             }
+
+            // -------------------------------------------------------------------------
+            // Control flow
+            // -------------------------------------------------------------------------
+
+            // NOP
+            0x00 => 4,
+
+            // STOP — stub, treat as NOP
+            0x10 => { let _ = self.fetch(bus); 4 }
+
+            // JP nn — unconditional absolute jump
+            0xC3 => { let nn = self.fetch_u16(bus); self.pc = nn; 16 }
+
+            // JP HL — PC = HL, no memory access
+            0xE9 => { self.pc = self.hl(); 4 }
+
+            // JP cc, nn — conditional absolute jump
+            0xC2 => { let nn = self.fetch_u16(bus); if !self.zero()  { self.pc = nn; 16 } else { 12 } }
+            0xCA => { let nn = self.fetch_u16(bus); if  self.zero()  { self.pc = nn; 16 } else { 12 } }
+            0xD2 => { let nn = self.fetch_u16(bus); if !self.carry() { self.pc = nn; 16 } else { 12 } }
+            0xDA => { let nn = self.fetch_u16(bus); if  self.carry() { self.pc = nn; 16 } else { 12 } }
+
+            // JR e — unconditional relative jump
+            0x18 => {
+                let e = self.fetch(bus) as i8;
+                self.pc = self.pc.wrapping_add(e as i16 as u16);
+                12
+            }
+
+            // JR cc, e — conditional relative jump
+            0x20 => {
+                let e = self.fetch(bus) as i8;
+                if !self.zero()  { self.pc = self.pc.wrapping_add(e as i16 as u16); 12 } else { 8 }
+            }
+            0x28 => {
+                let e = self.fetch(bus) as i8;
+                if  self.zero()  { self.pc = self.pc.wrapping_add(e as i16 as u16); 12 } else { 8 }
+            }
+            0x30 => {
+                let e = self.fetch(bus) as i8;
+                if !self.carry() { self.pc = self.pc.wrapping_add(e as i16 as u16); 12 } else { 8 }
+            }
+            0x38 => {
+                let e = self.fetch(bus) as i8;
+                if  self.carry() { self.pc = self.pc.wrapping_add(e as i16 as u16); 12 } else { 8 }
+            }
+
+            // CALL nn — unconditional call
+            0xCD => {
+                let nn = self.fetch_u16(bus);
+                let pc = self.pc;
+                self.push_u16(bus, pc);
+                self.pc = nn;
+                24
+            }
+
+            // CALL cc, nn — conditional call
+            0xC4 => {
+                let nn = self.fetch_u16(bus);
+                if !self.zero()  { let pc = self.pc; self.push_u16(bus, pc); self.pc = nn; 24 } else { 12 }
+            }
+            0xCC => {
+                let nn = self.fetch_u16(bus);
+                if  self.zero()  { let pc = self.pc; self.push_u16(bus, pc); self.pc = nn; 24 } else { 12 }
+            }
+            0xD4 => {
+                let nn = self.fetch_u16(bus);
+                if !self.carry() { let pc = self.pc; self.push_u16(bus, pc); self.pc = nn; 24 } else { 12 }
+            }
+            0xDC => {
+                let nn = self.fetch_u16(bus);
+                if  self.carry() { let pc = self.pc; self.push_u16(bus, pc); self.pc = nn; 24 } else { 12 }
+            }
+
+            // RET — unconditional return
+            0xC9 => { self.pc = self.pop_u16(bus); 16 }
+
+            // RETI — return and enable interrupts immediately (no delay)
+            0xD9 => { self.pc = self.pop_u16(bus); self.ime = true; 16 }
+
+            // RET cc — conditional return
+            0xC0 => { if !self.zero()  { self.pc = self.pop_u16(bus); 20 } else { 8 } }
+            0xC8 => { if  self.zero()  { self.pc = self.pop_u16(bus); 20 } else { 8 } }
+            0xD0 => { if !self.carry() { self.pc = self.pop_u16(bus); 20 } else { 8 } }
+            0xD8 => { if  self.carry() { self.pc = self.pop_u16(bus); 20 } else { 8 } }
+
+            // RST n — restart vectors
+            0xC7 => { let pc = self.pc; self.push_u16(bus, pc); self.pc = 0x0000; 16 }
+            0xCF => { let pc = self.pc; self.push_u16(bus, pc); self.pc = 0x0008; 16 }
+            0xD7 => { let pc = self.pc; self.push_u16(bus, pc); self.pc = 0x0010; 16 }
+            0xDF => { let pc = self.pc; self.push_u16(bus, pc); self.pc = 0x0018; 16 }
+            0xE7 => { let pc = self.pc; self.push_u16(bus, pc); self.pc = 0x0020; 16 }
+            0xEF => { let pc = self.pc; self.push_u16(bus, pc); self.pc = 0x0028; 16 }
+            0xF7 => { let pc = self.pc; self.push_u16(bus, pc); self.pc = 0x0030; 16 }
+            0xFF => { let pc = self.pc; self.push_u16(bus, pc); self.pc = 0x0038; 16 }
+
+            // DI — disable interrupts
+            0xF3 => { self.ime = false; self.ei_pending = false; 4 }
+
+            // EI — enable interrupts after the next instruction (1-instruction delay)
+            0xFB => { self.ei_pending = true; 4 }
 
             _ => panic!("Unimplemented opcode: {:#04X}", opcode),
         }
