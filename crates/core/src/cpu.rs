@@ -802,6 +802,89 @@ impl CPU {
             // EI — enable interrupts after the next instruction (1-instruction delay)
             0xFB => { self.ei_pending = true; 4 }
 
+            // CB-prefix: bit manipulation instructions
+            0xCB => {
+                let cb_op = self.fetch(bus);
+                let reg = cb_op & 0x07;
+                let bit = (cb_op >> 3) & 0x07;
+                let kind = cb_op >> 6;
+
+                let (val, _) = self.read_reg(reg, bus);
+                let hl_access = reg == 6;
+
+                let (result, write_back) = match kind {
+                    0 => {
+                        let (r, c) = match bit {
+                            0 => { // RLC
+                                let c = val >> 7;
+                                let r = val.rotate_left(1);
+                                self.set_carry(c != 0); self.set_half_carry(false); self.set_subtract(false); self.set_zero(r == 0);
+                                (r, c != 0)
+                            }
+                            1 => { // RRC
+                                let c = val & 1;
+                                let r = val.rotate_right(1);
+                                self.set_carry(c != 0); self.set_half_carry(false); self.set_subtract(false); self.set_zero(r == 0);
+                                (r, c != 0)
+                            }
+                            2 => { // RL
+                                let c = val >> 7;
+                                let r = (val << 1) | self.carry() as u8;
+                                self.set_carry(c != 0); self.set_half_carry(false); self.set_subtract(false); self.set_zero(r == 0);
+                                (r, c != 0)
+                            }
+                            3 => { // RR
+                                let c = val & 1;
+                                let r = (val >> 1) | ((self.carry() as u8) << 7);
+                                self.set_carry(c != 0); self.set_half_carry(false); self.set_subtract(false); self.set_zero(r == 0);
+                                (r, c != 0)
+                            }
+                            4 => { // SLA
+                                let c = val >> 7;
+                                let r = val << 1;
+                                self.set_carry(c != 0); self.set_half_carry(false); self.set_subtract(false); self.set_zero(r == 0);
+                                (r, c != 0)
+                            }
+                            5 => { // SRA
+                                let c = val & 1;
+                                let r = (val >> 1) | (val & 0x80);
+                                self.set_carry(c != 0); self.set_half_carry(false); self.set_subtract(false); self.set_zero(r == 0);
+                                (r, c != 0)
+                            }
+                            6 => { // SWAP
+                                let r = val.rotate_left(4);
+                                self.set_carry(false); self.set_half_carry(false); self.set_subtract(false); self.set_zero(r == 0);
+                                (r, false)
+                            }
+                            7 => { // SRL
+                                let c = val & 1;
+                                let r = val >> 1;
+                                self.set_carry(c != 0); self.set_half_carry(false); self.set_subtract(false); self.set_zero(r == 0);
+                                (r, c != 0)
+                            }
+                            _ => unreachable!(),
+                        };
+                        let _ = c;
+                        (r, true)
+                    }
+                    1 => { // BIT
+                        let b = (val >> bit) & 1;
+                        self.set_zero(b == 0);
+                        self.set_subtract(false);
+                        self.set_half_carry(true);
+                        (val, false)
+                    }
+                    2 => (val & !(1 << bit), true),  // RES
+                    3 => (val | (1 << bit), true),   // SET
+                    _ => unreachable!(),
+                };
+
+                if write_back {
+                    self.write_reg(reg, result, bus);
+                }
+                if hl_access { 16 } else { 8 }
+            }
+
             _ => panic!("Unimplemented opcode: {:#04X}", opcode),
         }
     }
