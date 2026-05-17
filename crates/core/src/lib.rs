@@ -7,7 +7,7 @@ pub mod timer;
 
 pub use bus::Bus;
 pub use cpu::CPU;
-pub use game_boy::{EmulationError, GameBoy, JoypadState, StepResult, SCREEN_HEIGHT, SCREEN_WIDTH};
+pub use game_boy::{EmulationError, GameBoy, JoypadState, StepResult};
 pub use mbc::MBC;
-pub use ppu::PPU;
+pub use ppu::{PPU, SCREEN_HEIGHT, SCREEN_WIDTH};
 pub use timer::Timer;

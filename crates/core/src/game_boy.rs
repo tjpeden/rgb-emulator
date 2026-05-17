@@ -1,11 +1,6 @@
 use crate::{Bus, CPU};
 use crate::ppu::PPU;
 
-/// Screen width in pixels.
-pub const SCREEN_WIDTH: u32 = 160;
-/// Screen height in pixels.
-pub const SCREEN_HEIGHT: u32 = 144;
-
 /// Total T-cycles per DMG frame (70224 = 154 lines × 456 T-cycles/line).
 #[allow(dead_code)]
 const FRAME_T_CYCLES: u32 = 70224;
@@ -75,8 +70,6 @@ pub struct GameBoy {
     pub serial_output: Vec<u8>,
     /// T-cycle counter within the current frame.
     cycles: u32,
-    /// 160×144 RGBA framebuffer. Updated once per frame (stub: solid black).
-    framebuffer: Box<[u8; (SCREEN_WIDTH * SCREEN_HEIGHT * 4) as usize]>,
 }
 
 impl GameBoy {
@@ -95,19 +88,12 @@ impl GameBoy {
             CPU::new_post_boot()
         };
 
-        // Initialise framebuffer to opaque black (R=0, G=0, B=0, A=255).
-        let mut fb = Box::new([0u8; (SCREEN_WIDTH * SCREEN_HEIGHT * 4) as usize]);
-        for chunk in fb.chunks_exact_mut(4) {
-            chunk[3] = 0xFF; // alpha
-        }
-
         Self {
             cpu,
             ppu: PPU::new(),
             bus,
             serial_output: Vec::new(),
             cycles: 0,
-            framebuffer: fb,
         }
     }
 
@@ -167,6 +153,6 @@ impl GameBoy {
     /// Each pixel is four consecutive bytes: red, green, blue, alpha.
     /// Valid to read after any [`StepResult::FrameComplete`] is returned.
     pub fn framebuffer(&self) -> &[u8] {
-        self.framebuffer.as_ref()
+        self.ppu.framebuffer()
     }
 }
