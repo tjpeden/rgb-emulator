@@ -937,7 +937,12 @@ impl CPU {
                 if write_back {
                     self.write_reg(reg, result, bus);
                 }
-                if hl_access { 16 } else { 8 }
+                // BIT b,(HL) = 12 T-cycles; other (HL) ops = 16; register ops = 8
+                match (hl_access, kind) {
+                    (true, 1) => 12, // BIT b,(HL)
+                    (true, _) => 16, // RLC/RRC/.../RES/SET on (HL)
+                    _ => 8,
+                }
             }
 
             _ => panic!("Unimplemented opcode: {:#04X}", opcode),

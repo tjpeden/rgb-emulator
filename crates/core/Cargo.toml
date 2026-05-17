@@ -2,3 +2,7 @@
 name = "rgb-core"
 version = "0.1.0"
 edition = "2021"
+
+[[bin]]
+name = "blargg-test"
+path = "src/bin/blargg_test.rs"

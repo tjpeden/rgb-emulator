@@ -1,7 +1,9 @@
 mod header;
+mod mbc1;
 mod rom_only;
 
 pub use header::CartridgeHeader;
+pub use mbc1::MBC1;
 pub use rom_only::ROMOnly;
 
 /// Cartridge memory bank controller interface.
@@ -32,6 +34,13 @@ pub fn from_rom(rom: Vec<u8>) -> Box<dyn MBC> {
                 header.title, header.mbc_type
             );
             Box::new(ROMOnly::new(rom))
+        }
+        0x01..=0x03 => {
+            eprintln!(
+                "[cartridge] MBC1: \"{}\" (MBC type {:#04X})",
+                header.title, header.mbc_type
+            );
+            Box::new(MBC1::new(rom))
         }
         t => panic!("Unsupported MBC type: {:#04X}", t),
     }
