@@ -1,5 +1,7 @@
+mod header;
 mod rom_only;
 
+pub use header::CartridgeHeader;
 pub use rom_only::ROMOnly;
 
 /// Cartridge memory bank controller interface.
@@ -13,12 +15,24 @@ pub trait MBC {
     fn write(&mut self, addr: u16, value: u8);
 }
 
-/// Detect the correct MBC from the cartridge header byte at `0x0147`
-/// and return a boxed trait object.
+/// Parse the cartridge header, validate it, and return the appropriate MBC
+/// implementation as a `Box<dyn MBC>`.
+///
+/// # Panics
+///
+/// - If the header is invalid (logo mismatch, checksum error, ROM too short).
+/// - If the MBC type byte (`0x0147`) is not yet supported.
 pub fn from_rom(rom: Vec<u8>) -> Box<dyn MBC> {
-    let mbc_type = rom.get(0x0147).copied().unwrap_or(0x00);
-    match mbc_type {
-        0x00 => Box::new(ROMOnly::new(rom)),
-        _ => panic!("Unsupported MBC type: {:#04X}", mbc_type),
+    let header = CartridgeHeader::parse(&rom);
+
+    match header.mbc_type {
+        0x00 => {
+            eprintln!(
+                "[cartridge] ROM-only: \"{}\" (MBC type {:#04X})",
+                header.title, header.mbc_type
+            );
+            Box::new(ROMOnly::new(rom))
+        }
+        t => panic!("Unsupported MBC type: {:#04X}", t),
     }
 }

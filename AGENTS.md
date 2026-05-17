@@ -95,4 +95,4 @@ Acronyms are written in full uppercase — `CPU`, `PPU`, `APU`, `MBC`, `OAM`, `D
 - GitHub: https://github.com/tjpeden/rgb-emulator
 - Issues are tracked per-phase using GitHub milestones
 - Commit convention: `feat: <description> (closes #N)`
-- Branch convention: `issue-N`
+- Push directly to `main`; no feature branches or PRs required

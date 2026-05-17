@@ -16,7 +16,7 @@ Follow these steps:
 4. Commit with the message: `feat: <short description of what was implemented> (closes #$ARGUMENTS)`
    - Write the description in present tense, lowercase, no period
    - Keep it under 72 characters total
-5. Push to origin: `git push -u origin issue-$ARGUMENTS`
+5. Push to origin: `git push origin main`
 6. Close the issue: `gh issue close $ARGUMENTS --comment "Implemented in $(git rev-parse --short HEAD)"`
 
 Report the commit hash and the GitHub issue URL when done.
