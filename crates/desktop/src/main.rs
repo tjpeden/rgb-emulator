@@ -1,3 +1,4 @@
+use std::io::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -124,6 +125,18 @@ impl ApplicationHandler for App {
                 Ok(StepResult::Continue) => {}
                 Err(e) => panic!("[desktop] emulation error: {e}"),
             }
+        }
+
+        // Print any serial output bytes produced this frame (blargg test ROMs
+        // use the serial port to report pass/fail before the PPU is working).
+        if !self.game_boy.serial_output.is_empty() {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            for &byte in &self.game_boy.serial_output {
+                let _ = out.write_all(&[byte]);
+            }
+            let _ = out.flush();
+            self.game_boy.serial_output.clear();
         }
 
         // Throttle to target frame rate.

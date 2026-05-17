@@ -33,6 +33,9 @@ pub struct Bus {
     io: [u8; 0x80],     // 128 B — 0xFF00–0xFF7F
     hram: [u8; 0x7F],   // 127 B — 0xFF80–0xFFFE
     pub ie: u8,         // 0xFFFF — Interrupt Enable
+    /// Serial bytes produced by the stub transfer handler. Drained by
+    /// `GameBoy` into its own `serial_output` buffer after each step.
+    pub serial_output: Vec<u8>,
 }
 
 impl Bus {
@@ -72,6 +75,7 @@ impl Bus {
             io,
             hram: [0u8; 0x7F],
             ie: 0x00,
+            serial_output: Vec::new(),
         }
     }
 
@@ -161,7 +165,19 @@ impl Bus {
             // Unused region — writes ignored per hardware
             0xFEA0..=0xFEFF => {}
 
-            // IO Registers — special handling for BOOT register (0xFF50)
+            // IO Registers — special handling for serial and BOOT registers
+            // SC (0xFF02) — Serial Transfer Control: when written with 0x81
+            // (transfer-start bit + internal-clock bit), capture SB and queue
+            // the byte for GameBoy::serial_output.
+            0xFF02 => {
+                self.io[0x02] = value;
+                if value == 0x81 {
+                    let sb = self.io[0x01];
+                    self.serial_output.push(sb);
+                    // Clear the transfer-start bit to signal completion.
+                    self.io[0x02] = value & !0x80;
+                }
+            }
             0xFF50 => {
                 // Any non-zero write permanently unmaps the boot ROM.
                 if value != 0 {

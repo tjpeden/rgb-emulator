@@ -68,7 +68,6 @@ impl std::error::Error for EmulationError {}
 pub struct GameBoy {
     #[allow(dead_code)]
     cpu: CPU,
-    #[allow(dead_code)]
     bus: Bus,
     /// Serial output bytes collected from blargg-style test ROMs.
     pub serial_output: Vec<u8>,
@@ -122,6 +121,12 @@ impl GameBoy {
         // Phase 1 stub: advance by 4 T-cycles per call. Real CPU execution
         // will replace this in Phase 2.
         self.cycles += 4;
+
+        // Drain any serial bytes produced by the bus stub into the public
+        // serial_output buffer so the desktop crate can print them to stdout.
+        if !self.bus.serial_output.is_empty() {
+            self.serial_output.append(&mut self.bus.serial_output);
+        }
 
         if self.cycles >= FRAME_T_CYCLES {
             self.cycles -= FRAME_T_CYCLES;
