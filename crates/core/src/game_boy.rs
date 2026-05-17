@@ -120,6 +120,12 @@ impl GameBoy {
         let t_cycles = self.cpu.step(&mut self.bus);
         self.cycles += t_cycles;
 
+        // Step the timer and request interrupt if it fired.
+        if self.bus.timer.step(t_cycles) {
+            let if_val = self.bus.read(0xFF0F);
+            self.bus.write(0xFF0F, if_val | 0x04);
+        }
+
         // Drain any serial bytes produced by the bus stub into the public
         // serial_output buffer so the desktop crate can print them to stdout.
         if !self.bus.serial_output.is_empty() {
