@@ -1,0 +1,11 @@
+[package]
+name = "rgb-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rgb-desktop"
+path = "src/main.rs"
+
+[dependencies]
+rgb-core = { path = "../core" }
