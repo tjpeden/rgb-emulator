@@ -117,14 +117,25 @@ impl GameBoy {
     /// Returns `Err(EmulationError)` on unrecoverable emulation faults (e.g.
     /// invalid opcode). In Phase 1 this never fires.
     pub fn step(&mut self, _input: &JoypadState) -> Result<StepResult, EmulationError> {
-        let t_cycles = self.cpu.step(&mut self.bus);
-        self.cycles += t_cycles;
+        // Handle HALT: if halted, consume 4T while waiting for an interrupt.
+        let t_cycles = if self.cpu.halted {
+            4 // consume 4T while halted
+        } else {
+            self.cpu.step(&mut self.bus)
+        };
 
         // Step the timer and request interrupt if it fired.
         if self.bus.timer.step(t_cycles) {
             let if_val = self.bus.read(0xFF0F);
             self.bus.write(0xFF0F, if_val | 0x04);
         }
+
+        // Check and dispatch interrupts (also wakes CPU from HALT).
+        if let Some(irq_cycles) = self.cpu.check_interrupts(&mut self.bus) {
+            self.cycles += irq_cycles;
+        }
+
+        self.cycles += t_cycles;
 
         // Drain any serial bytes produced by the bus stub into the public
         // serial_output buffer so the desktop crate can print them to stdout.

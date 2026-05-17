@@ -29,6 +29,8 @@ pub struct CPU {
     pub halted: bool,
     /// Pending EI: IME will be set at the start of the next instruction.
     pub ei_pending: bool,
+    /// HALT bug: PC fails to increment on the very next fetch.
+    pub halt_bug: bool,
 }
 
 impl CPU {
@@ -62,6 +64,7 @@ impl CPU {
             ime: false,
             halted: false,
             ei_pending: false,
+            halt_bug: false,
         }
     }
 
@@ -84,6 +87,7 @@ impl CPU {
             ime: false,
             halted: false,
             ei_pending: false,
+            halt_bug: false,
         }
     }
 
@@ -190,7 +194,12 @@ impl CPU {
     /// Fetch one byte from [PC] and advance PC.
     fn fetch(&mut self, bus: &mut Bus) -> u8 {
         let b = bus.read(self.pc);
-        self.pc = self.pc.wrapping_add(1);
+        if self.halt_bug {
+            self.halt_bug = false;
+            // PC does NOT increment (fetched byte "read twice")
+        } else {
+            self.pc = self.pc.wrapping_add(1);
+        }
         b
     }
 
@@ -318,6 +327,45 @@ impl CPU {
         result
     }
 
+    /// Check and dispatch a pending interrupt.
+    ///
+    /// Returns `Some(t_cycles)` if an interrupt was dispatched (always 20T = 5 M-cycles).
+    /// Returns `None` if no interrupt was dispatched.
+    pub fn check_interrupts(&mut self, bus: &mut Bus) -> Option<u32> {
+        let ie = bus.read(0xFFFF);
+        let iflags = bus.read(0xFF0F);
+        let pending = ie & iflags;
+
+        if pending == 0 {
+            return None;
+        }
+
+        // Interrupt wakes CPU from HALT regardless of IME
+        if self.halted {
+            self.halted = false;
+        }
+
+        if !self.ime {
+            return None;
+        }
+
+        // Dispatch highest-priority interrupt (lowest bit wins)
+        let bit = pending.trailing_zeros() as u8;
+        let vector: u16 = 0x0040 + (bit as u16) * 0x0008;
+
+        // Clear the interrupt flag bit
+        bus.write(0xFF0F, iflags & !(1 << bit));
+
+        // Disable IME
+        self.ime = false;
+
+        // Push current PC and jump to vector
+        self.push_u16(bus, self.pc);
+        self.pc = vector;
+
+        Some(20) // 5 M-cycles = 20 T-cycles
+    }
+
     /// Execute one instruction and return the number of T-cycles consumed.
     pub fn step(&mut self, bus: &mut Bus) -> u32 {
         // EI delay: enable IME before executing this instruction if ei_pending.
@@ -440,7 +488,14 @@ impl CPU {
             0x40..=0x7F => {
                 if opcode == 0x76 {
                     // HALT
-                    self.halted = true;
+                    let ie = bus.read(0xFFFF);
+                    let iflags = bus.read(0xFF0F);
+                    if !self.ime && (ie & iflags != 0) {
+                        // HALT bug: don't halt, but trigger PC-no-increment on next fetch
+                        self.halt_bug = true;
+                    } else {
+                        self.halted = true;
+                    }
                     return 4;
                 }
                 let dst = (opcode >> 3) & 0x07;
