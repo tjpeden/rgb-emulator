@@ -229,6 +229,91 @@ impl CPU {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // 8-bit ALU helpers
+    // -------------------------------------------------------------------------
+
+    /// ADD A, operand (with optional carry-in for ADC).
+    fn alu_add(&mut self, operand: u8, with_carry: bool) {
+        let carry_in = if with_carry { self.carry() as u8 } else { 0 };
+        let a = self.a;
+        let result = a.wrapping_add(operand).wrapping_add(carry_in);
+        self.set_zero(result == 0);
+        self.set_subtract(false);
+        self.set_half_carry((a & 0xF) + (operand & 0xF) + carry_in > 0xF);
+        self.set_carry((a as u16) + (operand as u16) + (carry_in as u16) > 0xFF);
+        self.a = result;
+    }
+
+    /// SUB operand (with optional borrow-in for SBC).
+    fn alu_sub(&mut self, operand: u8, with_carry: bool) {
+        let carry_in = if with_carry { self.carry() as u8 } else { 0 };
+        let a = self.a;
+        let result = a.wrapping_sub(operand).wrapping_sub(carry_in);
+        self.set_zero(result == 0);
+        self.set_subtract(true);
+        self.set_half_carry((a & 0xF) < (operand & 0xF) + carry_in);
+        self.set_carry((a as u16) < (operand as u16) + (carry_in as u16));
+        self.a = result;
+    }
+
+    /// AND operand.
+    fn alu_and(&mut self, operand: u8) {
+        self.a &= operand;
+        let z = self.a == 0;
+        self.set_zero(z);
+        self.set_subtract(false);
+        self.set_half_carry(true);
+        self.set_carry(false);
+    }
+
+    /// XOR operand.
+    fn alu_xor(&mut self, operand: u8) {
+        self.a ^= operand;
+        let z = self.a == 0;
+        self.set_zero(z);
+        self.set_subtract(false);
+        self.set_half_carry(false);
+        self.set_carry(false);
+    }
+
+    /// OR operand.
+    fn alu_or(&mut self, operand: u8) {
+        self.a |= operand;
+        let z = self.a == 0;
+        self.set_zero(z);
+        self.set_subtract(false);
+        self.set_half_carry(false);
+        self.set_carry(false);
+    }
+
+    /// CP operand — like SUB but result is discarded.
+    fn alu_cp(&mut self, operand: u8) {
+        let a = self.a;
+        self.set_zero(a == operand);
+        self.set_subtract(true);
+        self.set_half_carry((a & 0xF) < (operand & 0xF));
+        self.set_carry(a < operand);
+    }
+
+    /// INC r — C flag unaffected.
+    fn alu_inc(&mut self, v: u8) -> u8 {
+        let result = v.wrapping_add(1);
+        self.set_zero(result == 0);
+        self.set_subtract(false);
+        self.set_half_carry((v & 0xF) == 0xF);
+        result
+    }
+
+    /// DEC r — C flag unaffected.
+    fn alu_dec(&mut self, v: u8) -> u8 {
+        let result = v.wrapping_sub(1);
+        self.set_zero(result == 0);
+        self.set_subtract(true);
+        self.set_half_carry((v & 0xF) == 0x0);
+        result
+    }
+
     /// Execute one instruction and return the number of T-cycles consumed.
     pub fn step(&mut self, bus: &mut Bus) -> u32 {
         let opcode = self.fetch(bus);
@@ -342,7 +427,8 @@ impl CPU {
             }
 
             // LD r, r' block (0x40–0x7F), excluding HALT (0x76)
-            0x40..=0x7F => {                if opcode == 0x76 {
+            0x40..=0x7F => {
+                if opcode == 0x76 {
                     // HALT — not yet implemented
                     panic!("Unimplemented opcode: {:#04X}", opcode);
                 }
@@ -351,6 +437,197 @@ impl CPU {
                 let (value, extra_read) = self.read_reg(src, bus);
                 let extra_write = self.write_reg(dst, value, bus);
                 4 + extra_read + extra_write
+            }
+
+            // ADD A, r/m (0x80–0x87)
+            0x80..=0x87 => {
+                let (operand, extra) = self.read_reg(opcode & 0x07, bus);
+                self.alu_add(operand, false);
+                4 + extra
+            }
+            // ADC A, r/m (0x88–0x8F)
+            0x88..=0x8F => {
+                let (operand, extra) = self.read_reg(opcode & 0x07, bus);
+                self.alu_add(operand, true);
+                4 + extra
+            }
+            // SUB r/m (0x90–0x97)
+            0x90..=0x97 => {
+                let (operand, extra) = self.read_reg(opcode & 0x07, bus);
+                self.alu_sub(operand, false);
+                4 + extra
+            }
+            // SBC A, r/m (0x98–0x9F)
+            0x98..=0x9F => {
+                let (operand, extra) = self.read_reg(opcode & 0x07, bus);
+                self.alu_sub(operand, true);
+                4 + extra
+            }
+            // AND r/m (0xA0–0xA7)
+            0xA0..=0xA7 => {
+                let (operand, extra) = self.read_reg(opcode & 0x07, bus);
+                self.alu_and(operand);
+                4 + extra
+            }
+            // XOR r/m (0xA8–0xAF)
+            0xA8..=0xAF => {
+                let (operand, extra) = self.read_reg(opcode & 0x07, bus);
+                self.alu_xor(operand);
+                4 + extra
+            }
+            // OR r/m (0xB0–0xB7)
+            0xB0..=0xB7 => {
+                let (operand, extra) = self.read_reg(opcode & 0x07, bus);
+                self.alu_or(operand);
+                4 + extra
+            }
+            // CP r/m (0xB8–0xBF)
+            0xB8..=0xBF => {
+                let (operand, extra) = self.read_reg(opcode & 0x07, bus);
+                self.alu_cp(operand);
+                4 + extra
+            }
+
+            // ADD A, n
+            0xC6 => { let n = self.fetch(bus); self.alu_add(n, false); 8 }
+            // ADC A, n
+            0xCE => { let n = self.fetch(bus); self.alu_add(n, true); 8 }
+            // SUB n
+            0xD6 => { let n = self.fetch(bus); self.alu_sub(n, false); 8 }
+            // SBC A, n
+            0xDE => { let n = self.fetch(bus); self.alu_sub(n, true); 8 }
+            // AND n
+            0xE6 => { let n = self.fetch(bus); self.alu_and(n); 8 }
+            // XOR n
+            0xEE => { let n = self.fetch(bus); self.alu_xor(n); 8 }
+            // OR n
+            0xF6 => { let n = self.fetch(bus); self.alu_or(n); 8 }
+            // CP n
+            0xFE => { let n = self.fetch(bus); self.alu_cp(n); 8 }
+
+            // INC r (8-bit registers)
+            0x04 => { self.b = self.alu_inc(self.b); 4 }
+            0x0C => { self.c = self.alu_inc(self.c); 4 }
+            0x14 => { self.d = self.alu_inc(self.d); 4 }
+            0x1C => { self.e = self.alu_inc(self.e); 4 }
+            0x24 => { self.h = self.alu_inc(self.h); 4 }
+            0x2C => { self.l = self.alu_inc(self.l); 4 }
+            0x34 => {
+                let hl = self.hl();
+                let v = bus.read(hl);
+                let r = self.alu_inc(v);
+                bus.write(hl, r);
+                12
+            }
+            0x3C => { self.a = self.alu_inc(self.a); 4 }
+
+            // DEC r (8-bit registers)
+            0x05 => { self.b = self.alu_dec(self.b); 4 }
+            0x0D => { self.c = self.alu_dec(self.c); 4 }
+            0x15 => { self.d = self.alu_dec(self.d); 4 }
+            0x1D => { self.e = self.alu_dec(self.e); 4 }
+            0x25 => { self.h = self.alu_dec(self.h); 4 }
+            0x2D => { self.l = self.alu_dec(self.l); 4 }
+            0x35 => {
+                let hl = self.hl();
+                let v = bus.read(hl);
+                let r = self.alu_dec(v);
+                bus.write(hl, r);
+                12
+            }
+            0x3D => { self.a = self.alu_dec(self.a); 4 }
+
+            // DAA
+            0x27 => {
+                let mut a = self.a as u16;
+                if !self.subtract() {
+                    if self.half_carry() || (a & 0x0F) > 9 {
+                        a = a.wrapping_add(0x06);
+                    }
+                    if self.carry() || a > 0x9F {
+                        a = a.wrapping_add(0x60);
+                        self.set_carry(true);
+                    }
+                } else {
+                    if self.half_carry() {
+                        a = a.wrapping_sub(0x06);
+                    }
+                    if self.carry() {
+                        a = a.wrapping_sub(0x60);
+                    }
+                }
+                self.a = a as u8;
+                self.set_zero(self.a == 0);
+                self.set_half_carry(false);
+                4
+            }
+
+            // CPL — complement A
+            0x2F => {
+                self.a = !self.a;
+                self.set_subtract(true);
+                self.set_half_carry(true);
+                4
+            }
+
+            // SCF — set carry flag
+            0x37 => {
+                self.set_subtract(false);
+                self.set_half_carry(false);
+                self.set_carry(true);
+                4
+            }
+
+            // CCF — complement carry flag
+            0x3F => {
+                let c = self.carry();
+                self.set_subtract(false);
+                self.set_half_carry(false);
+                self.set_carry(!c);
+                4
+            }
+
+            // RLCA
+            0x07 => {
+                let bit7 = self.a >> 7;
+                self.a = (self.a << 1) | bit7;
+                self.set_zero(false);
+                self.set_subtract(false);
+                self.set_half_carry(false);
+                self.set_carry(bit7 != 0);
+                4
+            }
+            // RRCA
+            0x0F => {
+                let bit0 = self.a & 1;
+                self.a = (self.a >> 1) | (bit0 << 7);
+                self.set_zero(false);
+                self.set_subtract(false);
+                self.set_half_carry(false);
+                self.set_carry(bit0 != 0);
+                4
+            }
+            // RLA
+            0x17 => {
+                let old_carry = self.carry() as u8;
+                let bit7 = self.a >> 7;
+                self.a = (self.a << 1) | old_carry;
+                self.set_zero(false);
+                self.set_subtract(false);
+                self.set_half_carry(false);
+                self.set_carry(bit7 != 0);
+                4
+            }
+            // RRA
+            0x1F => {
+                let old_carry = self.carry() as u8;
+                let bit0 = self.a & 1;
+                self.a = (self.a >> 1) | (old_carry << 7);
+                self.set_zero(false);
+                self.set_subtract(false);
+                self.set_half_carry(false);
+                self.set_carry(bit0 != 0);
+                4
             }
 
             _ => panic!("Unimplemented opcode: {:#04X}", opcode),
