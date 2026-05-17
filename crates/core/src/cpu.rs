@@ -1,3 +1,5 @@
+use crate::Bus;
+
 /// Sharp SM83 CPU registers.
 ///
 /// The SM83 has eight 8-bit registers (`A`, `F`, `B`, `C`, `D`, `E`, `H`, `L`)
@@ -160,6 +162,136 @@ impl CPU {
 
     pub fn set_carry(&mut self, v: bool) {
         if v { self.f |= 0x10; } else { self.f &= !0x10; }
+    }
+
+    // -------------------------------------------------------------------------
+    // Instruction execution
+    // -------------------------------------------------------------------------
+
+    /// Fetch one byte from [PC] and advance PC.
+    fn fetch(&mut self, bus: &mut Bus) -> u8 {
+        let b = bus.read(self.pc);
+        self.pc = self.pc.wrapping_add(1);
+        b
+    }
+
+    /// Fetch a little-endian 16-bit word from [PC] and advance PC by 2.
+    fn fetch_u16(&mut self, bus: &mut Bus) -> u16 {
+        let lo = self.fetch(bus) as u16;
+        let hi = self.fetch(bus) as u16;
+        (hi << 8) | lo
+    }
+
+    /// Read an 8-bit register by SM83 encoding (0=B,1=C,2=D,3=E,4=H,5=L,6=(HL),7=A).
+    ///
+    /// Returns the value and the additional T-cycles cost for (HL) reads (4 extra).
+    fn read_reg(&self, idx: u8, bus: &mut Bus) -> (u8, u32) {
+        match idx {
+            0 => (self.b, 0),
+            1 => (self.c, 0),
+            2 => (self.d, 0),
+            3 => (self.e, 0),
+            4 => (self.h, 0),
+            5 => (self.l, 0),
+            6 => (bus.read(self.hl()), 4),
+            7 => (self.a, 0),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Write an 8-bit register by SM83 encoding. Returns extra T-cycles for (HL) writes.
+    fn write_reg(&mut self, idx: u8, value: u8, bus: &mut Bus) -> u32 {
+        match idx {
+            0 => { self.b = value; 0 }
+            1 => { self.c = value; 0 }
+            2 => { self.d = value; 0 }
+            3 => { self.e = value; 0 }
+            4 => { self.h = value; 0 }
+            5 => { self.l = value; 0 }
+            6 => { bus.write(self.hl(), value); 4 }
+            7 => { self.a = value; 0 }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Execute one instruction and return the number of T-cycles consumed.
+    pub fn step(&mut self, bus: &mut Bus) -> u32 {
+        let opcode = self.fetch(bus);
+
+        match opcode {
+            // LD r, n — load immediate byte into register
+            0x06 => { let n = self.fetch(bus); self.b = n; 8 }
+            0x0E => { let n = self.fetch(bus); self.c = n; 8 }
+            0x16 => { let n = self.fetch(bus); self.d = n; 8 }
+            0x1E => { let n = self.fetch(bus); self.e = n; 8 }
+            0x26 => { let n = self.fetch(bus); self.h = n; 8 }
+            0x2E => { let n = self.fetch(bus); self.l = n; 8 }
+            0x36 => { let n = self.fetch(bus); bus.write(self.hl(), n); 12 }
+            0x3E => { let n = self.fetch(bus); self.a = n; 8 }
+
+            // LD A, (BC) / LD A, (DE)
+            0x0A => { self.a = bus.read(self.bc()); 8 }
+            0x1A => { self.a = bus.read(self.de()); 8 }
+
+            // LD (BC), A / LD (DE), A
+            0x02 => { bus.write(self.bc(), self.a); 8 }
+            0x12 => { bus.write(self.de(), self.a); 8 }
+
+            // LD A, (HL+) / LD A, (HL-)
+            0x2A => {
+                let hl = self.hl();
+                self.a = bus.read(hl);
+                self.set_hl(hl.wrapping_add(1));
+                8
+            }
+            0x3A => {
+                let hl = self.hl();
+                self.a = bus.read(hl);
+                self.set_hl(hl.wrapping_sub(1));
+                8
+            }
+
+            // LD (HL+), A / LD (HL-), A
+            0x22 => {
+                let hl = self.hl();
+                bus.write(hl, self.a);
+                self.set_hl(hl.wrapping_add(1));
+                8
+            }
+            0x32 => {
+                let hl = self.hl();
+                bus.write(hl, self.a);
+                self.set_hl(hl.wrapping_sub(1));
+                8
+            }
+
+            // LD A, (nn) / LD (nn), A
+            0xFA => { let nn = self.fetch_u16(bus); self.a = bus.read(nn); 16 }
+            0xEA => { let nn = self.fetch_u16(bus); bus.write(nn, self.a); 16 }
+
+            // LDH (n), A / LDH A, (n)
+            0xE0 => { let n = self.fetch(bus); bus.write(0xFF00 | n as u16, self.a); 12 }
+            0xF0 => { let n = self.fetch(bus); self.a = bus.read(0xFF00 | n as u16); 12 }
+
+            // LD (C), A / LD A, (C)
+            0xE2 => { bus.write(0xFF00 | self.c as u16, self.a); 8 }
+            0xF2 => { self.a = bus.read(0xFF00 | self.c as u16); 8 }
+
+            // LD r, r' block (0x40–0x7F), excluding HALT (0x76)
+            0x40..=0x7F => {
+                if opcode == 0x76 {
+                    // HALT — not yet implemented
+                    panic!("Unimplemented opcode: {:#04X}", opcode);
+                }
+                let dst = (opcode >> 3) & 0x07;
+                let src = opcode & 0x07;
+                let (value, extra_read) = self.read_reg(src, bus);
+                let extra_write = self.write_reg(dst, value, bus);
+                4 + extra_read + extra_write
+            }
+
+            _ => panic!("Unimplemented opcode: {:#04X}", opcode),
+        }
     }
 }
 

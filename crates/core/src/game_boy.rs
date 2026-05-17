@@ -66,7 +66,6 @@ impl std::error::Error for EmulationError {}
 /// }
 /// ```
 pub struct GameBoy {
-    #[allow(dead_code)]
     cpu: CPU,
     bus: Bus,
     /// Serial output bytes collected from blargg-style test ROMs.
@@ -118,9 +117,8 @@ impl GameBoy {
     /// Returns `Err(EmulationError)` on unrecoverable emulation faults (e.g.
     /// invalid opcode). In Phase 1 this never fires.
     pub fn step(&mut self, _input: &JoypadState) -> Result<StepResult, EmulationError> {
-        // Phase 1 stub: advance by 4 T-cycles per call. Real CPU execution
-        // will replace this in Phase 2.
-        self.cycles += 4;
+        let t_cycles = self.cpu.step(&mut self.bus);
+        self.cycles += t_cycles;
 
         // Drain any serial bytes produced by the bus stub into the public
         // serial_output buffer so the desktop crate can print them to stdout.
