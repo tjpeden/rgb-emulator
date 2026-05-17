@@ -1,1 +1,176 @@
-fn main() {}
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use pixels::{Pixels, SurfaceTexture};
+use rgb_core::{GameBoy, JoypadState, StepResult, SCREEN_HEIGHT, SCREEN_WIDTH};
+use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
+use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::window::{Window, WindowId};
+
+/// Scale factor: the 160×144 DMG screen is displayed at 3× (480×432).
+const SCALE: u32 = 3;
+
+/// Target frame duration for ~59.7 fps (70224 T-cycles / 4_194_304 Hz ≈ 16.742 ms).
+const FRAME_DURATION: Duration = Duration::from_nanos(16_742_706);
+
+// ---------------------------------------------------------------------------
+
+/// Holds the winit window and pixels surface together so their lifetimes match.
+struct RenderState {
+    window: Arc<Window>,
+    pixels: Pixels<'static>,
+}
+
+/// Main application state.
+struct App {
+    game_boy: GameBoy,
+    render: Option<RenderState>,
+    joypad: JoypadState,
+    last_frame: Instant,
+}
+
+impl App {
+    fn new(game_boy: GameBoy) -> Self {
+        Self {
+            game_boy,
+            render: None,
+            joypad: JoypadState::default(),
+            last_frame: Instant::now(),
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let attrs = Window::default_attributes()
+            .with_title("rgb-emulator")
+            .with_inner_size(LogicalSize::new(SCREEN_WIDTH * SCALE, SCREEN_HEIGHT * SCALE))
+            .with_resizable(false);
+
+        let window = Arc::new(
+            event_loop
+                .create_window(attrs)
+                .expect("failed to create window"),
+        );
+
+        let inner = window.inner_size();
+        let surface_texture =
+            SurfaceTexture::new(inner.width, inner.height, Arc::clone(&window));
+        let pixels = Pixels::new(SCREEN_WIDTH, SCREEN_HEIGHT, surface_texture)
+            .expect("failed to create pixel buffer");
+
+        self.render = Some(RenderState { window, pixels });
+        self.last_frame = Instant::now();
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(key),
+                        state,
+                        ..
+                    },
+                ..
+            } => {
+                let pressed = state == ElementState::Pressed;
+                match key {
+                    KeyCode::Escape => event_loop.exit(),
+                    KeyCode::ArrowUp => self.joypad.up = pressed,
+                    KeyCode::ArrowDown => self.joypad.down = pressed,
+                    KeyCode::ArrowLeft => self.joypad.left = pressed,
+                    KeyCode::ArrowRight => self.joypad.right = pressed,
+                    KeyCode::KeyZ => self.joypad.a = pressed,
+                    KeyCode::KeyX => self.joypad.b = pressed,
+                    KeyCode::Enter => self.joypad.start = pressed,
+                    KeyCode::ShiftRight => self.joypad.select = pressed,
+                    _ => {}
+                }
+            }
+
+            WindowEvent::RedrawRequested => {
+                if let Some(render) = &mut self.render {
+                    let frame = render.pixels.frame_mut();
+                    frame.copy_from_slice(self.game_boy.framebuffer());
+
+                    if let Err(e) = render.pixels.render() {
+                        eprintln!("[desktop] render error: {e}");
+                    }
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // Run the emulator until a full frame has been produced.
+        loop {
+            match self.game_boy.step(&self.joypad) {
+                Ok(StepResult::FrameComplete) => break,
+                Ok(StepResult::Continue) => {}
+                Err(e) => panic!("[desktop] emulation error: {e}"),
+            }
+        }
+
+        // Throttle to target frame rate.
+        let target = self.last_frame + FRAME_DURATION;
+        let now = Instant::now();
+        if now < target {
+            std::thread::sleep(target - now);
+        }
+        self.last_frame = Instant::now();
+
+        // Request redraw to blit the framebuffer.
+        if let Some(render) = &self.render {
+            render.window.request_redraw();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.len() < 2 {
+        eprintln!("Usage: {} <rom> [boot_rom]", args[0]);
+        std::process::exit(1);
+    }
+
+    let rom_path = &args[1];
+    let boot_rom_path = args.get(2);
+
+    let rom = std::fs::read(rom_path).unwrap_or_else(|e| {
+        eprintln!("Failed to read ROM '{}': {e}", rom_path);
+        std::process::exit(1);
+    });
+
+    let boot_rom = boot_rom_path.map(|path| {
+        std::fs::read(path).unwrap_or_else(|e| {
+            eprintln!("Failed to read boot ROM '{}': {e}", path);
+            std::process::exit(1);
+        })
+    });
+
+    let game_boy = GameBoy::new(rom, boot_rom);
+
+    let event_loop = EventLoop::new().expect("failed to create event loop");
+    event_loop.set_control_flow(ControlFlow::Poll);
+
+    let mut app = App::new(game_boy);
+    event_loop.run_app(&mut app).expect("event loop error");
+}

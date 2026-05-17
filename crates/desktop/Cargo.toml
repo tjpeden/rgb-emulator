@@ -9,3 +9,5 @@ path = "src/main.rs"
 
 [dependencies]
 rgb-core = { path = "../core" }
+pixels = "0.17"
+winit = "0.30"
