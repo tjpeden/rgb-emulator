@@ -1,6 +1,6 @@
 mod rom_only;
 
-pub use rom_only::RomOnly;
+pub use rom_only::ROMOnly;
 
 /// Cartridge memory bank controller interface.
 ///
@@ -8,17 +8,17 @@ pub use rom_only::RomOnly;
 /// - ROM Bank 0: `0x0000–0x3FFF`
 /// - ROM Bank N: `0x4000–0x7FFF`
 /// - External RAM: `0xA000–0xBFFF`
-pub trait Mbc {
+pub trait MBC {
     fn read(&self, addr: u16) -> u8;
     fn write(&mut self, addr: u16, value: u8);
 }
 
 /// Detect the correct MBC from the cartridge header byte at `0x0147`
 /// and return a boxed trait object.
-pub fn from_rom(rom: Vec<u8>) -> Box<dyn Mbc> {
+pub fn from_rom(rom: Vec<u8>) -> Box<dyn MBC> {
     let mbc_type = rom.get(0x0147).copied().unwrap_or(0x00);
     match mbc_type {
-        0x00 => Box::new(RomOnly::new(rom)),
+        0x00 => Box::new(ROMOnly::new(rom)),
         _ => panic!("Unsupported MBC type: {:#04X}", mbc_type),
     }
 }

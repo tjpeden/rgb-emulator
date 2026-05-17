@@ -1,4 +1,4 @@
-use crate::mbc::{self, Mbc};
+use crate::mbc::{self, MBC};
 
 /// DMG memory bus.
 ///
@@ -21,7 +21,7 @@ use crate::mbc::{self, Mbc};
 /// | `0xFF80–0xFFFE` | HRAM             | 127 bytes                    |
 /// | `0xFFFF`        | IE Register      | Interrupt Enable             |
 pub struct Bus {
-    cartridge: Box<dyn Mbc>,
+    cartridge: Box<dyn MBC>,
     vram: [u8; 0x2000], // 8 KiB — 0x8000–0x9FFF
     wram: [u8; 0x2000], // 8 KiB — 0xC000–0xDFFF
     oam: [u8; 0xA0],    // 160 B — 0xFE00–0xFE9F
