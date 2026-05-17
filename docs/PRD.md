@@ -25,6 +25,12 @@ A Game Boy (DMG) emulator written in Rust. Third attempt at this project — the
 
 ---
 
+## Naming Conventions
+
+Acronyms are written in full uppercase — `CPU`, `PPU`, `APU`, `MBC`, `OAM`, `DMA`, `FIFO`. The clippy `upper_case_acronyms` lint is suppressed project-wide in `Cargo.toml`. Do not write `Cpu`, `Ppu`, `Mbc`, etc.
+
+---
+
 ## Architecture
 
 ### Crate Structure
