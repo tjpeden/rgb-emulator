@@ -1,4 +1,5 @@
 use crate::{Bus, CPU};
+use crate::ppu::PPU;
 
 /// Screen width in pixels.
 pub const SCREEN_WIDTH: u32 = 160;
@@ -6,6 +7,7 @@ pub const SCREEN_WIDTH: u32 = 160;
 pub const SCREEN_HEIGHT: u32 = 144;
 
 /// Total T-cycles per DMG frame (70224 = 154 lines × 456 T-cycles/line).
+#[allow(dead_code)]
 const FRAME_T_CYCLES: u32 = 70224;
 
 /// Joypad input state passed into [`GameBoy::step`] each call.
@@ -67,6 +69,7 @@ impl std::error::Error for EmulationError {}
 /// ```
 pub struct GameBoy {
     cpu: CPU,
+    ppu: PPU,
     bus: Bus,
     /// Serial output bytes collected from blargg-style test ROMs.
     pub serial_output: Vec<u8>,
@@ -100,6 +103,7 @@ impl GameBoy {
 
         Self {
             cpu,
+            ppu: PPU::new(),
             bus,
             serial_output: Vec::new(),
             cycles: 0,
@@ -130,6 +134,13 @@ impl GameBoy {
             self.bus.write(0xFF0F, if_val | 0x04);
         }
 
+        // Step the PPU. If VBlank is entered, request interrupt (IF bit 0).
+        let vblank = self.ppu.step(&mut self.bus, t_cycles);
+        if vblank {
+            let if_val = self.bus.read(0xFF0F);
+            self.bus.write(0xFF0F, if_val | 0x01);
+        }
+
         // Check and dispatch interrupts (also wakes CPU from HALT).
         if let Some(irq_cycles) = self.cpu.check_interrupts(&mut self.bus) {
             self.cycles += irq_cycles;
@@ -143,8 +154,8 @@ impl GameBoy {
             self.serial_output.append(&mut self.bus.serial_output);
         }
 
-        if self.cycles >= FRAME_T_CYCLES {
-            self.cycles -= FRAME_T_CYCLES;
+        // VBlank entry (PPU entering Mode 1) marks the frame boundary.
+        if vblank {
             Ok(StepResult::FrameComplete)
         } else {
             Ok(StepResult::Continue)
