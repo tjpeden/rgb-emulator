@@ -1,8 +1,10 @@
 mod ch1;
+mod ch2;
 
 use ch1::CH1;
+use ch2::CH2;
 
-/// DMG Audio Processing Unit — frame sequencer + CH1.
+/// DMG Audio Processing Unit — frame sequencer + CH1 + CH2.
 ///
 /// The APU frame sequencer is clocked at 512 Hz by detecting the falling edge
 /// of bit 12 of the internal 16-bit DIV counter (equivalent to bit 4 of the
@@ -26,8 +28,9 @@ pub struct APU {
     last_div_bit: bool,
     /// CH1: Pulse wave with frequency sweep.
     ch1: CH1,
-    // CH2–CH4 are stubbed; will be populated in future phases.
-    _ch2: (),
+    /// CH2: Pulse wave (no sweep).
+    ch2: CH2,
+    // CH3–CH4 are stubbed; will be populated in future phases.
     _ch3: (),
     _ch4: (),
 }
@@ -38,7 +41,7 @@ impl APU {
             frame_seq_step: 0,
             last_div_bit: false,
             ch1: CH1::new(),
-            _ch2: (),
+            ch2: CH2::new(),
             _ch3: (),
             _ch4: (),
         }
@@ -59,6 +62,7 @@ impl APU {
         self.last_div_bit = current_div_bit;
 
         self.ch1.step(cycles);
+        self.ch2.step(cycles);
     }
 
     fn tick_frame_sequencer(&mut self) {
@@ -82,11 +86,13 @@ impl APU {
     /// Clock length counters (256 Hz).
     fn clock_length(&mut self) {
         self.ch1.clock_length();
+        self.ch2.clock_length();
     }
 
     /// Clock volume envelopes (64 Hz).
     fn clock_envelope(&mut self) {
         self.ch1.clock_envelope();
+        self.ch2.clock_envelope();
     }
 
     /// Clock CH1 frequency sweep (128 Hz).
@@ -98,21 +104,27 @@ impl APU {
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
             0xFF10..=0xFF14 => self.ch1.read(addr),
+            0xFF16..=0xFF19 => self.ch2.read(addr),
             _ => 0xFF,
         }
     }
 
     /// Write an APU register.
     pub fn write(&mut self, addr: u16, value: u8) {
-        if let 0xFF10..=0xFF14 = addr {
-            self.ch1.write(addr, value);
+        match addr {
+            0xFF10..=0xFF14 => self.ch1.write(addr, value),
+            0xFF16..=0xFF19 => self.ch2.write(addr, value),
+            _ => {}
         }
     }
 
     /// Mix and return a stereo audio sample.
     pub fn mix_samples(&self) -> (f32, f32) {
         let ch1 = self.ch1.sample();
-        (ch1, ch1)
+        let ch2 = self.ch2.sample();
+        let left = ch1 + ch2;
+        let right = ch1 + ch2;
+        (left, right)
     }
 }
 
