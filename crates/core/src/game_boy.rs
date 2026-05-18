@@ -245,4 +245,10 @@ impl GameBoy {
     pub fn load_battery_ram(&mut self, data: &[u8]) {
         self.bus.load_battery_ram(data);
     }
+
+    /// Drain and return accumulated 44100 Hz stereo audio samples produced
+    /// since the last call. Each sample is `(left, right)` in the range `[-1.0, 1.0]`.
+    pub fn drain_audio_samples(&mut self) -> Vec<(f32, f32)> {
+        self.bus.apu.drain_samples()
+    }
 }

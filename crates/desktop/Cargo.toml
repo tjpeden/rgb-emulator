@@ -11,3 +11,4 @@ path = "src/main.rs"
 rgb-core = { path = "../core" }
 pixels = "0.17"
 winit = "0.30"
+cpal = "0.15"

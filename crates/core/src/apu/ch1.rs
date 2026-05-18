@@ -258,6 +258,11 @@ impl CH1 {
         // Map 0-15 to [-1.0, 1.0]: (raw / 7.5) - 1.0
         (f32::from(raw) / 7.5) - 1.0
     }
+
+    /// Returns true if the channel is currently active (enabled and DAC on).
+    pub fn active(&self) -> bool {
+        self.enabled && self.dac_enabled
+    }
 }
 
 impl Default for CH1 {

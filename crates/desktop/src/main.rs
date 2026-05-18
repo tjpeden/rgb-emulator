@@ -1,8 +1,10 @@
+use std::collections::VecDeque;
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use pixels::{Pixels, SurfaceTexture};
 use rgb_core::{DebugInfo, GameBoy, JoypadState, StepResult, SCREEN_HEIGHT, SCREEN_WIDTH};
 use winit::application::ApplicationHandler;
@@ -38,10 +40,14 @@ struct App {
     debug_overlay: bool,
     /// Whether the F2 VRAM tile viewer is active.
     tile_viewer: bool,
+    /// Shared audio ring buffer fed by the emulator and drained by cpal.
+    audio_buffer: Arc<Mutex<VecDeque<(f32, f32)>>>,
+    /// The active cpal audio stream (kept alive for its duration).
+    _audio_stream: Option<cpal::Stream>,
 }
 
 impl App {
-    fn new(game_boy: GameBoy, save_path: Option<PathBuf>) -> Self {
+    fn new(game_boy: GameBoy, save_path: Option<PathBuf>, audio_buffer: Arc<Mutex<VecDeque<(f32, f32)>>>, audio_stream: Option<cpal::Stream>) -> Self {
         Self {
             game_boy,
             render: None,
@@ -50,6 +56,8 @@ impl App {
             save_path,
             debug_overlay: false,
             tile_viewer: false,
+            audio_buffer,
+            _audio_stream: audio_stream,
         }
     }
 
@@ -231,6 +239,20 @@ impl ApplicationHandler for App {
             }
         }
 
+        // Push audio samples produced this frame into the shared ring buffer.
+        let samples = self.game_boy.drain_audio_samples();
+        if !samples.is_empty() {
+            if let Ok(mut buf) = self.audio_buffer.lock() {
+                // Cap the buffer to avoid unbounded growth (~2 frames of samples).
+                const MAX_SAMPLES: usize = 4096;
+                for sample in samples {
+                    if buf.len() < MAX_SAMPLES {
+                        buf.push_back(sample);
+                    }
+                }
+            }
+        }
+
         // Print any serial output bytes produced this frame (blargg test ROMs
         // use the serial port to report pass/fail before the PPU is working).
         if !self.game_boy.serial_output.is_empty() {
@@ -264,6 +286,46 @@ impl ApplicationHandler for App {
 }
 
 // ---------------------------------------------------------------------------
+
+/// Initialise cpal audio output. Returns the running stream (must be kept alive).
+/// Falls back gracefully if no audio device is available.
+fn init_audio(audio_buffer: Arc<Mutex<VecDeque<(f32, f32)>>>) -> Option<cpal::Stream> {
+    let host = cpal::default_host();
+    let device = match host.default_output_device() {
+        Some(d) => d,
+        None => {
+            eprintln!("[desktop] no audio output device found — audio disabled");
+            return None;
+        }
+    };
+
+    // Find a supported f32 stereo config at or near 44100 Hz.
+    let config = cpal::StreamConfig {
+        channels: 2,
+        sample_rate: cpal::SampleRate(44100),
+        buffer_size: cpal::BufferSize::Default,
+    };
+
+    let stream = device
+        .build_output_stream(
+            &config,
+            move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                let mut buf = audio_buffer.lock().unwrap();
+                let frames = output.len() / 2;
+                for i in 0..frames {
+                    let (l, r) = buf.pop_front().unwrap_or((0.0, 0.0));
+                    output[i * 2] = l;
+                    output[i * 2 + 1] = r;
+                }
+            },
+            |err| eprintln!("[desktop] audio stream error: {err}"),
+            None,
+        )
+        .ok()?;
+
+    stream.play().ok()?;
+    Some(stream)
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -314,9 +376,15 @@ fn main() {
     // Only track the save path when the cartridge actually has a battery.
     let save_path = game_boy.battery_ram().map(|_| save_path);
 
+    // Set up cpal audio output.
+    let audio_buffer: Arc<Mutex<VecDeque<(f32, f32)>>> =
+        Arc::new(Mutex::new(VecDeque::new()));
+
+    let audio_stream = init_audio(Arc::clone(&audio_buffer));
+
     let event_loop = EventLoop::new().expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(game_boy, save_path);
+    let mut app = App::new(game_boy, save_path, audio_buffer, audio_stream);
     event_loop.run_app(&mut app).expect("event loop error");
 }

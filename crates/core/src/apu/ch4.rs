@@ -205,6 +205,11 @@ impl CH4 {
         let raw = output_bit * self.env_volume; // 0-15
         (f32::from(raw) / 7.5) - 1.0
     }
+
+    /// Returns true if the channel is currently active.
+    pub fn active(&self) -> bool {
+        self.enabled && self.dac_enabled
+    }
 }
 
 impl Default for CH4 {

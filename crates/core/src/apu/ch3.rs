@@ -177,6 +177,11 @@ impl CH3 {
         // Map 0-15 to [-1.0, 1.0]
         (f32::from(shifted) - 7.5) / 7.5
     }
+
+    /// Returns true if the channel is currently active.
+    pub fn active(&self) -> bool {
+        self.enabled && self.dac_enabled
+    }
 }
 
 impl Default for CH3 {
