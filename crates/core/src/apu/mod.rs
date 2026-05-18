@@ -1,10 +1,12 @@
 mod ch1;
 mod ch2;
 mod ch3;
+mod ch4;
 
 use ch1::CH1;
 use ch2::CH2;
 use ch3::CH3;
+use ch4::CH4;
 
 /// DMG Audio Processing Unit — frame sequencer + CH1 + CH2 + CH3.
 ///
@@ -34,8 +36,8 @@ pub struct APU {
     ch2: CH2,
     /// CH3: Arbitrary waveform.
     ch3: CH3,
-    // CH4 is stubbed; will be populated in a future phase.
-    _ch4: (),
+    /// CH4: Noise via LFSR.
+    ch4: CH4,
 }
 
 impl APU {
@@ -46,7 +48,7 @@ impl APU {
             ch1: CH1::new(),
             ch2: CH2::new(),
             ch3: CH3::new(),
-            _ch4: (),
+            ch4: CH4::new(),
         }
     }
 
@@ -67,6 +69,7 @@ impl APU {
         self.ch1.step(cycles);
         self.ch2.step(cycles);
         self.ch3.step(cycles);
+        self.ch4.step(cycles);
     }
 
     fn tick_frame_sequencer(&mut self) {
@@ -92,12 +95,14 @@ impl APU {
         self.ch1.clock_length();
         self.ch2.clock_length();
         self.ch3.clock_length();
+        self.ch4.clock_length();
     }
 
     /// Clock volume envelopes (64 Hz).
     fn clock_envelope(&mut self) {
         self.ch1.clock_envelope();
         self.ch2.clock_envelope();
+        self.ch4.clock_envelope();
     }
 
     /// Clock CH1 frequency sweep (128 Hz).
@@ -111,6 +116,7 @@ impl APU {
             0xFF10..=0xFF14 => self.ch1.read(addr),
             0xFF16..=0xFF19 => self.ch2.read(addr),
             0xFF1A..=0xFF1E | 0xFF30..=0xFF3F => self.ch3.read(addr),
+            0xFF20..=0xFF23 => self.ch4.read(addr),
             _ => 0xFF,
         }
     }
@@ -121,6 +127,7 @@ impl APU {
             0xFF10..=0xFF14 => self.ch1.write(addr, value),
             0xFF16..=0xFF19 => self.ch2.write(addr, value),
             0xFF1A..=0xFF1E | 0xFF30..=0xFF3F => self.ch3.write(addr, value),
+            0xFF20..=0xFF23 => self.ch4.write(addr, value),
             _ => {}
         }
     }
@@ -130,8 +137,9 @@ impl APU {
         let ch1 = self.ch1.sample();
         let ch2 = self.ch2.sample();
         let ch3 = self.ch3.sample();
-        let left = ch1 + ch2 + ch3;
-        let right = ch1 + ch2 + ch3;
+        let ch4 = self.ch4.sample();
+        let left = ch1 + ch2 + ch3 + ch4;
+        let right = ch1 + ch2 + ch3 + ch4;
         (left, right)
     }
 }
