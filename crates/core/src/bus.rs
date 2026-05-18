@@ -88,6 +88,8 @@ impl Bus {
     /// Only registers with non-zero defaults are listed; the rest are `0x00`.
     fn post_boot_io() -> [u8; 0x80] {
         let mut io = [0u8; 0x80];
+        // Joypad
+        io[0x00] = 0xCF; // P1/JOYP — no group selected, no buttons pressed
         // APU
         io[0x10] = 0x80; // NR10 — CH1 sweep (bit 7 set, read-only on hardware)
         // PPU
@@ -134,8 +136,16 @@ impl Bus {
             0xFEA0..=0xFEFF => 0xFF,
 
             // IO Registers
+            // P1/JOYP (0xFF00): bits 4–5 echo the written selector; bits 0–3
+            // are active-low button inputs, hardwired high (not pressed) until
+            // joypad input is wired in Phase 4 (#25).
+            // Bits 6–7 are unused open-drain lines, always read as 1.
+            0xFF00 => {
+                let selector = self.io[0x00];
+                (selector & 0x30) | 0xCF
+            }
             0xFF04..=0xFF07 => self.timer.read(addr),
-            0xFF00..=0xFF7F => self.io[(addr - 0xFF00) as usize],
+            0xFF01..=0xFF7F => self.io[(addr - 0xFF00) as usize],
 
             // HRAM
             0xFF80..=0xFFFE => self.hram[(addr - 0xFF80) as usize],
