@@ -146,6 +146,10 @@ impl GameBoy {
             self.bus.write(0xFF0F, if_val | 0x04);
         }
 
+        // Step the APU frame sequencer, driven by the same internal counter.
+        let div = self.bus.timer.div_counter();
+        self.bus.apu.step(div);
+
         // Step the PPU. If VBlank is entered, request interrupt (IF bit 0).
         let vblank = self.ppu.step(&mut self.bus, t_cycles);
         if vblank {

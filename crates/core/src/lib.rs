@@ -1,3 +1,4 @@
+pub mod apu;
 pub mod bus;
 pub mod cpu;
 pub mod game_boy;
@@ -5,6 +6,7 @@ pub mod mbc;
 pub mod ppu;
 pub mod timer;
 
+pub use apu::APU;
 pub use bus::{Bus, JoypadState};
 pub use cpu::CPU;
 pub use game_boy::{DebugInfo, EmulationError, GameBoy, StepResult};

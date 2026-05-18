@@ -1,3 +1,4 @@
+use crate::apu::APU;
 use crate::mbc::{self, MBC};
 use crate::timer::Timer;
 
@@ -50,6 +51,7 @@ pub struct Bus {
     hram: [u8; 0x7F],   // 127 B — 0xFF80–0xFFFE
     pub ie: u8,         // 0xFFFF — Interrupt Enable
     pub timer: Timer,
+    pub apu: APU,
     /// Serial bytes produced by the stub transfer handler. Drained by
     /// `GameBoy` into its own `serial_output` buffer after each step.
     pub serial_output: Vec<u8>,
@@ -96,6 +98,7 @@ impl Bus {
             ie: 0x00,
             serial_output: Vec::new(),
             timer: Timer::new(),
+            apu: APU::new(),
             joypad: JoypadState::default(),
         }
     }
@@ -217,6 +220,8 @@ impl Bus {
             }
             0xFF01..=0xFF03 => self.io[(addr - 0xFF00) as usize],
             0xFF04..=0xFF07 => self.timer.read(addr),
+            // APU registers: channel control (0xFF10–0xFF26) and wave RAM (0xFF30–0xFF3F)
+            0xFF10..=0xFF26 | 0xFF30..=0xFF3F => self.apu.read(addr),
             0xFF08..=0xFF7F => self.io[(addr - 0xFF00) as usize],
 
             // HRAM
@@ -262,6 +267,8 @@ impl Bus {
 
             // IO Registers — special handling for timer, serial and BOOT registers
             0xFF04..=0xFF07 => self.timer.write(addr, value),
+            // APU registers: channel control (0xFF10–0xFF26) and wave RAM (0xFF30–0xFF3F)
+            0xFF10..=0xFF26 | 0xFF30..=0xFF3F => self.apu.write(addr, value),
             // STAT (0xFF41) — bits 0–2 are read-only (set by PPU); only bits
             // 3–6 (interrupt-enable flags) are writable by the CPU.
             0xFF41 => {

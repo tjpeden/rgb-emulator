@@ -89,6 +89,13 @@ impl Timer {
         }
     }
 
+    /// Return the raw 16-bit internal counter.
+    ///
+    /// Used by the APU frame sequencer to detect falling edges on bit 12.
+    pub fn div_counter(&self) -> u16 {
+        self.counter
+    }
+
     /// Write a timer register.
     pub fn write(&mut self, addr: u16, value: u8) {
         match addr {
