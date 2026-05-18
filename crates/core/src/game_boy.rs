@@ -2,6 +2,36 @@ use crate::{Bus, CPU};
 use crate::bus::JoypadState;
 use crate::ppu::PPU;
 
+/// Snapshot of emulator state for the F1 debug overlay.
+#[derive(Debug, Clone)]
+pub struct DebugInfo {
+    // CPU registers
+    pub a: u8,
+    pub b: u8,
+    pub c: u8,
+    pub d: u8,
+    pub e: u8,
+    pub h: u8,
+    pub l: u8,
+    pub f: u8,
+    pub sp: u16,
+    pub pc: u16,
+    // Flags (derived from F)
+    pub flag_z: bool,
+    pub flag_n: bool,
+    pub flag_h: bool,
+    pub flag_c: bool,
+    // IME
+    pub ime: bool,
+    // PPU
+    pub ppu_mode: u8,
+    pub ly: u8,
+    // Cycle count
+    pub total_cycles: u64,
+    // ROM title
+    pub rom_title: String,
+}
+
 /// Total T-cycles per DMG frame (70224 = 154 lines × 456 T-cycles/line).
 #[allow(dead_code)]
 const FRAME_T_CYCLES: u32 = 70224;
@@ -56,6 +86,8 @@ pub struct GameBoy {
     pub serial_output: Vec<u8>,
     /// T-cycle counter within the current frame.
     cycles: u32,
+    /// Total T-cycles elapsed since boot.
+    total_cycles: u64,
 }
 
 impl GameBoy {
@@ -80,6 +112,7 @@ impl GameBoy {
             bus,
             serial_output: Vec::new(),
             cycles: 0,
+            total_cycles: 0,
         }
     }
 
@@ -126,6 +159,7 @@ impl GameBoy {
         }
 
         self.cycles += t_cycles;
+        self.total_cycles += t_cycles as u64;
 
         // Drain any serial bytes produced by the bus stub into the public
         // serial_output buffer so the desktop crate can print them to stdout.
@@ -138,6 +172,38 @@ impl GameBoy {
             Ok(StepResult::FrameComplete)
         } else {
             Ok(StepResult::Continue)
+        }
+    }
+
+    /// Return a snapshot of current emulator state for the debug overlay (F1).
+    pub fn debug_info(&self) -> DebugInfo {
+        // Extract ROM title from cartridge header bytes 0x0134–0x0143.
+        let title_bytes: Vec<u8> = (0x0134u16..=0x0143)
+            .map(|addr| self.bus.read(addr))
+            .take_while(|&b| b != 0)
+            .collect();
+        let rom_title = String::from_utf8_lossy(&title_bytes).into_owned();
+
+        DebugInfo {
+            a: self.cpu.a,
+            b: self.cpu.b,
+            c: self.cpu.c,
+            d: self.cpu.d,
+            e: self.cpu.e,
+            h: self.cpu.h,
+            l: self.cpu.l,
+            f: self.cpu.f,
+            sp: self.cpu.sp,
+            pc: self.cpu.pc,
+            flag_z: self.cpu.f & 0x80 != 0,
+            flag_n: self.cpu.f & 0x40 != 0,
+            flag_h: self.cpu.f & 0x20 != 0,
+            flag_c: self.cpu.f & 0x10 != 0,
+            ime: self.cpu.ime,
+            ppu_mode: self.ppu.mode(),
+            ly: self.ppu.ly(),
+            total_cycles: self.total_cycles,
+            rom_title,
         }
     }
 

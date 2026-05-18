@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pixels::{Pixels, SurfaceTexture};
-use rgb_core::{GameBoy, JoypadState, StepResult, SCREEN_HEIGHT, SCREEN_WIDTH};
+use rgb_core::{DebugInfo, GameBoy, JoypadState, StepResult, SCREEN_HEIGHT, SCREEN_WIDTH};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -34,6 +34,8 @@ struct App {
     last_frame: Instant,
     /// Path to the `.sav` file for battery-backed cartridges, or `None`.
     save_path: Option<PathBuf>,
+    /// Whether the F1 debug overlay is active.
+    debug_overlay: bool,
 }
 
 impl App {
@@ -44,7 +46,26 @@ impl App {
             joypad: JoypadState::default(),
             last_frame: Instant::now(),
             save_path,
+            debug_overlay: false,
         }
+    }
+
+    /// Print the debug overlay to stdout.
+    fn print_debug_overlay(info: &DebugInfo) {
+        println!("=== DEBUG OVERLAY ===");
+        println!("ROM: {}", if info.rom_title.is_empty() { "<unknown>" } else { &info.rom_title });
+        println!("Cycles: {}", info.total_cycles);
+        println!("--- CPU Registers ---");
+        println!(" A={:#04X}  F={:#04X}  AF={:#06X}", info.a, info.f, (info.a as u16) << 8 | info.f as u16);
+        println!(" B={:#04X}  C={:#04X}  BC={:#06X}", info.b, info.c, (info.b as u16) << 8 | info.c as u16);
+        println!(" D={:#04X}  E={:#04X}  DE={:#06X}", info.d, info.e, (info.d as u16) << 8 | info.e as u16);
+        println!(" H={:#04X}  L={:#04X}  HL={:#06X}", info.h, info.l, (info.h as u16) << 8 | info.l as u16);
+        println!(" SP={:#06X}  PC={:#06X}", info.sp, info.pc);
+        println!("--- Flags ---");
+        println!(" Z={}  N={}  H={}  C={}  IME={}", info.flag_z as u8, info.flag_n as u8, info.flag_h as u8, info.flag_c as u8, info.ime as u8);
+        println!("--- PPU ---");
+        println!(" Mode={}  LY={}", info.ppu_mode, info.ly);
+        println!("=====================");
     }
 
     /// Write battery-backed RAM to the `.sav` file, if applicable.
@@ -110,6 +131,10 @@ impl ApplicationHandler for App {
                 let pressed = state == ElementState::Pressed;
                 match key {
                     KeyCode::Escape => event_loop.exit(),
+                    KeyCode::F1 if pressed => {
+                        self.debug_overlay = !self.debug_overlay;
+                        Self::print_debug_overlay(&self.game_boy.debug_info());
+                    }
                     KeyCode::ArrowUp => self.joypad.up = pressed,
                     KeyCode::ArrowDown => self.joypad.down = pressed,
                     KeyCode::ArrowLeft => self.joypad.left = pressed,

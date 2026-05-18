@@ -12,7 +12,7 @@ const FB_HEIGHT: usize = SCREEN_HEIGHT as usize;
 
 /// DMG PPU rendering mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PpuMode {
+enum PPUMode {
     /// Mode 0 — HBlank. CPU/PPU access to VRAM and OAM is restored.
     HBlank = 0,
     /// Mode 1 — VBlank (scanlines 144–153).
@@ -111,7 +111,7 @@ pub struct PPU {
     /// T-cycle position within the current scanline (0–455).
     dot: u32,
     /// Active PPU mode. Reflected in the low two bits of `STAT` (`0xFF41`).
-    mode: PpuMode,
+    mode: PPUMode,
     /// Previous state of the combined STAT interrupt line (for edge detection).
     ///
     /// The STAT interrupt (`IF` bit 1) is edge-triggered: it fires only on a
@@ -193,7 +193,7 @@ impl PPU {
         Self {
             ly: 0,
             dot: 0,
-            mode: PpuMode::OAMScan,
+            mode: PPUMode::OAMScan,
             stat_irq_line: false,
 
             fetcher_state: FetcherState::ReadTileId,
@@ -249,7 +249,7 @@ impl PPU {
         if lcdc & 0x80 == 0 {
             self.ly = 0;
             self.dot = 0;
-            self.mode = PpuMode::HBlank;
+            self.mode = PPUMode::HBlank;
             bus.write(0xFF44, 0);
             // Clear mode bits and LYC=LY flag; drive interrupt line low.
             let stat = bus.read(0xFF41);
@@ -275,23 +275,23 @@ impl PPU {
 
         // Derive the PPU mode from the updated scanline / dot position.
         let new_mode = if self.ly >= 144 {
-            PpuMode::VBlank
+            PPUMode::VBlank
         } else if self.dot < 80 {
-            PpuMode::OAMScan
+            PPUMode::OAMScan
         } else if self.dot < 252 {
             // Mode 3: simplified fixed 172-dot duration.
             // TODO: add SCX fine-scroll penalty and per-sprite 6-dot penalty.
-            PpuMode::Drawing
+            PPUMode::Drawing
         } else {
-            PpuMode::HBlank
+            PPUMode::HBlank
         };
 
         // Handle mode transitions.
         match (prev_mode, new_mode) {
-            (PpuMode::OAMScan, PpuMode::Drawing) => {
+            (PPUMode::OAMScan, PPUMode::Drawing) => {
                 self.begin_scanline(bus);
             }
-            (PpuMode::Drawing, PpuMode::HBlank) => {
+            (PPUMode::Drawing, PPUMode::HBlank) => {
                 // Scanline ended: increment window line counter if window fired.
                 if self.window_active {
                     self.window_line = self.window_line.wrapping_add(1);
@@ -303,7 +303,7 @@ impl PPU {
         self.mode = new_mode;
 
         // Run the pixel pipeline during Mode 3.
-        if self.mode == PpuMode::Drawing {
+        if self.mode == PPUMode::Drawing {
             // Fetcher advances every 2 T-cycles.
             self.fetcher_dot += 1;
             if self.fetcher_dot >= 2 {
@@ -320,7 +320,7 @@ impl PPU {
         self.update_stat(bus);
 
         // VBlank interrupt: assert exactly once on the Mode 1 transition.
-        prev_mode != PpuMode::VBlank && new_mode == PpuMode::VBlank
+        prev_mode != PPUMode::VBlank && new_mode == PPUMode::VBlank
     }
 
     // ── STAT register and interrupt line ────────────────────────────────────
@@ -359,9 +359,9 @@ impl PPU {
         bus.write_stat_ppu(new_stat);
 
         // Compute the new STAT interrupt line (OR of all enabled+active sources).
-        let stat_line = (new_stat & 0x08 != 0 && self.mode == PpuMode::HBlank)
-            || (new_stat & 0x10 != 0 && self.mode == PpuMode::VBlank)
-            || (new_stat & 0x20 != 0 && self.mode == PpuMode::OAMScan)
+        let stat_line = (new_stat & 0x08 != 0 && self.mode == PPUMode::HBlank)
+            || (new_stat & 0x10 != 0 && self.mode == PPUMode::VBlank)
+            || (new_stat & 0x20 != 0 && self.mode == PPUMode::OAMScan)
             || (new_stat & 0x40 != 0 && lyc_eq);
 
         // Edge-triggered: request STAT interrupt only on 0→1 transition.
@@ -754,5 +754,15 @@ impl PPU {
         self.fetch_x = 0;
         // No additional fine-scroll discard applies to the window.
         self.scx_discard = 0;
+    }
+
+    /// Current scanline (LY), 0–153.
+    pub fn ly(&self) -> u8 {
+        self.ly
+    }
+
+    /// Current PPU mode as a `u8` (0=HBlank, 1=VBlank, 2=OAMScan, 3=Drawing).
+    pub fn mode(&self) -> u8 {
+        self.mode as u8
     }
 }
