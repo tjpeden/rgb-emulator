@@ -144,8 +144,9 @@ impl Bus {
                 let selector = self.io[0x00];
                 (selector & 0x30) | 0xCF
             }
+            0xFF01..=0xFF03 => self.io[(addr - 0xFF00) as usize],
             0xFF04..=0xFF07 => self.timer.read(addr),
-            0xFF01..=0xFF7F => self.io[(addr - 0xFF00) as usize],
+            0xFF08..=0xFF7F => self.io[(addr - 0xFF00) as usize],
 
             // HRAM
             0xFF80..=0xFFFE => self.hram[(addr - 0xFF80) as usize],
