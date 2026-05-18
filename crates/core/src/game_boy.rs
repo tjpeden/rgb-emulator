@@ -1,24 +1,10 @@
 use crate::{Bus, CPU};
+use crate::bus::JoypadState;
 use crate::ppu::PPU;
 
 /// Total T-cycles per DMG frame (70224 = 154 lines × 456 T-cycles/line).
 #[allow(dead_code)]
 const FRAME_T_CYCLES: u32 = 70224;
-
-/// Joypad input state passed into [`GameBoy::step`] each call.
-///
-/// All fields are `true` when the corresponding button is pressed.
-#[derive(Default, Clone, Copy)]
-pub struct JoypadState {
-    pub up: bool,
-    pub down: bool,
-    pub left: bool,
-    pub right: bool,
-    pub a: bool,
-    pub b: bool,
-    pub start: bool,
-    pub select: bool,
-}
 
 /// Returned by [`GameBoy::step`] to indicate what happened during this step.
 #[derive(Debug, PartialEq, Eq)]
@@ -106,7 +92,14 @@ impl GameBoy {
     ///
     /// Returns `Err(EmulationError)` on unrecoverable emulation faults (e.g.
     /// invalid opcode). In Phase 1 this never fires.
-    pub fn step(&mut self, _input: &JoypadState) -> Result<StepResult, EmulationError> {
+    pub fn step(&mut self, input: &JoypadState) -> Result<StepResult, EmulationError> {
+        // Update joypad state. If any button was newly pressed, request the
+        // joypad interrupt (IF bit 4, vector 0x0060).
+        if self.bus.update_joypad(*input) {
+            let if_val = self.bus.read(0xFF0F);
+            self.bus.write(0xFF0F, if_val | 0x10);
+        }
+
         // Handle HALT: if halted, consume 4T while waiting for an interrupt.
         let t_cycles = if self.cpu.halted {
             4 // consume 4T while halted

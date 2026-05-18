@@ -1,6 +1,21 @@
 use crate::mbc::{self, MBC};
 use crate::timer::Timer;
 
+/// Joypad input state passed into [`crate::GameBoy::step`] each call.
+///
+/// All fields are `true` when the corresponding button is pressed.
+#[derive(Default, Clone, Copy)]
+pub struct JoypadState {
+    pub up: bool,
+    pub down: bool,
+    pub left: bool,
+    pub right: bool,
+    pub a: bool,
+    pub b: bool,
+    pub start: bool,
+    pub select: bool,
+}
+
 /// DMG memory bus.
 ///
 /// Owns all addressable memory regions and dispatches reads/writes via
@@ -38,6 +53,8 @@ pub struct Bus {
     /// Serial bytes produced by the stub transfer handler. Drained by
     /// `GameBoy` into its own `serial_output` buffer after each step.
     pub serial_output: Vec<u8>,
+    /// Current joypad state; updated every `GameBoy::step` call.
+    joypad: JoypadState,
 }
 
 impl Bus {
@@ -79,6 +96,7 @@ impl Bus {
             ie: 0x00,
             serial_output: Vec::new(),
             timer: Timer::new(),
+            joypad: JoypadState::default(),
         }
     }
 
@@ -109,6 +127,25 @@ impl Bus {
     /// Restores the cartridge's battery-backed RAM from previously-saved data.
     pub fn load_battery_ram(&mut self, data: &[u8]) {
         self.cartridge.load_battery_ram(data);
+    }
+
+    /// Update the stored joypad state and report whether a joypad interrupt
+    /// should be requested.
+    ///
+    /// Returns `true` if any button transitioned from unpressed to pressed
+    /// this call (hardware fires IF bit 4 on such a low-going edge).
+    pub fn update_joypad(&mut self, new_state: JoypadState) -> bool {
+        let prev = self.joypad;
+        self.joypad = new_state;
+        // Any button newly pressed? (false → true transition)
+        (!prev.a      && new_state.a)      ||
+        (!prev.b      && new_state.b)      ||
+        (!prev.start  && new_state.start)  ||
+        (!prev.select && new_state.select) ||
+        (!prev.up     && new_state.up)     ||
+        (!prev.down   && new_state.down)   ||
+        (!prev.left   && new_state.left)   ||
+        (!prev.right  && new_state.right)
     }
 
     /// Returns `true` if the boot ROM is currently mapped over `0x0000–0x00FF`.
@@ -147,13 +184,36 @@ impl Bus {
             0xFEA0..=0xFEFF => 0xFF,
 
             // IO Registers
-            // P1/JOYP (0xFF00): bits 4–5 echo the written selector; bits 0–3
-            // are active-low button inputs, hardwired high (not pressed) until
-            // joypad input is wired in Phase 4 (#25).
-            // Bits 6–7 are unused open-drain lines, always read as 1.
+            // P1/JOYP (0xFF00):
+            //   Bit 5 = 0: select button group (A, B, Select, Start)
+            //   Bit 4 = 0: select d-pad group  (Right, Left, Up, Down)
+            //   Bits 3–0: active-low state (0 = pressed) of selected group(s)
+            //   Bits 6–7: unused open-drain lines, always read as 1.
+            // Both groups may be selected simultaneously; outputs are ORed
+            // (open-drain), so pressing any button in either group pulls low.
             0xFF00 => {
                 let selector = self.io[0x00];
-                (selector & 0x30) | 0xCF
+                let mut lo = 0x0F_u8; // default: all high (nothing pressed)
+
+                if selector & 0x20 == 0 {
+                    // Button group selected (bit 5 low)
+                    // Bit layout: Start=3, Select=2, B=1, A=0
+                    if self.joypad.a      { lo &= !0x01; }
+                    if self.joypad.b      { lo &= !0x02; }
+                    if self.joypad.select { lo &= !0x04; }
+                    if self.joypad.start  { lo &= !0x08; }
+                }
+                if selector & 0x10 == 0 {
+                    // D-pad group selected (bit 4 low)
+                    // Bit layout: Down=3, Up=2, Left=1, Right=0
+                    if self.joypad.right { lo &= !0x01; }
+                    if self.joypad.left  { lo &= !0x02; }
+                    if self.joypad.up    { lo &= !0x04; }
+                    if self.joypad.down  { lo &= !0x08; }
+                }
+
+                // Bits 7–6 always 1; bits 5–4 echo selector; bits 3–0 active-low
+                0xC0 | (selector & 0x30) | lo
             }
             0xFF01..=0xFF03 => self.io[(addr - 0xFF00) as usize],
             0xFF04..=0xFF07 => self.timer.read(addr),
