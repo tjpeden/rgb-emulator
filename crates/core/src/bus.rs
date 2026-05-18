@@ -121,6 +121,11 @@ impl Bus {
         io
     }
 
+    /// Returns a slice of the 6144 VRAM tile bytes (`0x8000–0x97FF`).
+    pub fn vram_tiles(&self) -> &[u8] {
+        &self.vram[..0x1800] // 384 tiles × 16 bytes = 6144 bytes
+    }
+
     /// Returns the cartridge's battery-backed RAM contents, or `None` if the
     /// cartridge has no battery.
     pub fn battery_ram(&self) -> Option<&[u8]> {

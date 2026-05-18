@@ -36,6 +36,8 @@ struct App {
     save_path: Option<PathBuf>,
     /// Whether the F1 debug overlay is active.
     debug_overlay: bool,
+    /// Whether the F2 VRAM tile viewer is active.
+    tile_viewer: bool,
 }
 
 impl App {
@@ -47,6 +49,7 @@ impl App {
             last_frame: Instant::now(),
             save_path,
             debug_overlay: false,
+            tile_viewer: false,
         }
     }
 
@@ -68,7 +71,55 @@ impl App {
         println!("=====================");
     }
 
-    /// Write battery-backed RAM to the `.sav` file, if applicable.
+    /// Write a 128×192 PPM tile viewer image to `/tmp/rgb_tiles.ppm`.
+    ///
+    /// Layout: 16 tiles wide × 24 tiles tall, each tile 8×8 pixels.
+    /// Palette applied from the BGP register.
+    fn write_tile_viewer(vram: &[u8], bgp: u8) {
+        // DMG grayscale palette: index → (R, G, B)
+        const SHADES: [(u8, u8, u8); 4] = [
+            (255, 255, 255), // 0 = white
+            (170, 170, 170), // 1 = light gray
+            (85, 85, 85),    // 2 = dark gray
+            (0, 0, 0),       // 3 = black
+        ];
+
+        let w: usize = 16 * 8; // 128
+        let h: usize = 24 * 8; // 192
+        let mut pixels = vec![(255u8, 255u8, 255u8); w * h];
+
+        for tile_idx in 0..384usize {
+            let tile_col = tile_idx % 16;
+            let tile_row = tile_idx / 16;
+            let base = tile_idx * 16;
+
+            for row in 0..8usize {
+                let lo = vram[base + row * 2];
+                let hi = vram[base + row * 2 + 1];
+                for col in 0..8usize {
+                    let color_idx = ((hi >> (7 - col)) & 1) << 1 | ((lo >> (7 - col)) & 1);
+                    let shade_idx = (bgp >> (color_idx * 2)) & 0x03;
+                    let px = tile_col * 8 + col;
+                    let py = tile_row * 8 + row;
+                    pixels[py * w + px] = SHADES[shade_idx as usize];
+                }
+            }
+        }
+
+        // Write PPM P6 format.
+        let path = "/tmp/rgb_tiles.ppm";
+        let header = format!("P6\n{} {}\n255\n", w, h);
+        let mut buf = Vec::with_capacity(header.len() + w * h * 3);
+        buf.extend_from_slice(header.as_bytes());
+        for (r, g, b) in &pixels {
+            buf.push(*r);
+            buf.push(*g);
+            buf.push(*b);
+        }
+        if let Err(e) = std::fs::write(path, &buf) {
+            eprintln!("[desktop] tile viewer write error: {e}");
+        }
+    }
     fn persist_save(&self) {
         if let (Some(ram), Some(path)) = (self.game_boy.battery_ram(), &self.save_path) {
             match std::fs::write(path, &ram) {
@@ -135,6 +186,14 @@ impl ApplicationHandler for App {
                         self.debug_overlay = !self.debug_overlay;
                         Self::print_debug_overlay(&self.game_boy.debug_info());
                     }
+                    KeyCode::F2 if pressed => {
+                        self.tile_viewer = !self.tile_viewer;
+                        if self.tile_viewer {
+                            println!("Tile viewer: ON — writing to /tmp/rgb_tiles.ppm");
+                        } else {
+                            println!("Tile viewer: OFF");
+                        }
+                    }
                     KeyCode::ArrowUp => self.joypad.up = pressed,
                     KeyCode::ArrowDown => self.joypad.down = pressed,
                     KeyCode::ArrowLeft => self.joypad.left = pressed,
@@ -195,6 +254,11 @@ impl ApplicationHandler for App {
         // Request redraw to blit the framebuffer.
         if let Some(render) = &self.render {
             render.window.request_redraw();
+        }
+
+        // When the tile viewer is enabled, write the PPM each frame.
+        if self.tile_viewer {
+            Self::write_tile_viewer(self.game_boy.vram_tiles(), self.game_boy.bgp());
         }
     }
 }

@@ -148,7 +148,7 @@ impl GameBoy {
 
         // Step the APU frame sequencer, driven by the same internal counter.
         let div = self.bus.timer.div_counter();
-        self.bus.apu.step(div);
+        self.bus.apu.step(div, t_cycles);
 
         // Step the PPU. If VBlank is entered, request interrupt (IF bit 0).
         let vblank = self.ppu.step(&mut self.bus, t_cycles);
@@ -217,6 +217,21 @@ impl GameBoy {
     /// Valid to read after any [`StepResult::FrameComplete`] is returned.
     pub fn framebuffer(&self) -> &[u8] {
         self.ppu.framebuffer()
+    }
+
+    /// Returns a slice of the 6144 VRAM tile bytes (`0x8000–0x97FF`, 384 tiles).
+    ///
+    /// Tile data layout: 16 bytes per tile, 2 bytes per row (low byte then high
+    /// byte). Pixel n color = `(hi >> (7-n) & 1) << 1 | (lo >> (7-n) & 1)`.
+    pub fn vram_tiles(&self) -> &[u8] {
+        self.bus.vram_tiles()
+    }
+
+    /// Returns the current BGP (Background Palette) register value (`0xFF47`).
+    ///
+    /// Bits 1-0 = color for index 0, bits 3-2 = color for index 1, etc.
+    pub fn bgp(&self) -> u8 {
+        self.bus.read(0xFF47)
     }
 
     /// Returns the cartridge's battery-backed RAM, or `None` if the cartridge
