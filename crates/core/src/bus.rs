@@ -100,6 +100,17 @@ impl Bus {
         io
     }
 
+    /// Returns the cartridge's battery-backed RAM contents, or `None` if the
+    /// cartridge has no battery.
+    pub fn battery_ram(&self) -> Option<&[u8]> {
+        self.cartridge.battery_ram()
+    }
+
+    /// Restores the cartridge's battery-backed RAM from previously-saved data.
+    pub fn load_battery_ram(&mut self, data: &[u8]) {
+        self.cartridge.load_battery_ram(data);
+    }
+
     /// Returns `true` if the boot ROM is currently mapped over `0x0000–0x00FF`.
     pub fn boot_rom_active(&self) -> bool {
         self.boot_rom.is_some()

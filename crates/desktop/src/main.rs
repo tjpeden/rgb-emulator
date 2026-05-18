@@ -1,4 +1,5 @@
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -31,16 +32,35 @@ struct App {
     render: Option<RenderState>,
     joypad: JoypadState,
     last_frame: Instant,
+    /// Path to the `.sav` file for battery-backed cartridges, or `None`.
+    save_path: Option<PathBuf>,
 }
 
 impl App {
-    fn new(game_boy: GameBoy) -> Self {
+    fn new(game_boy: GameBoy, save_path: Option<PathBuf>) -> Self {
         Self {
             game_boy,
             render: None,
             joypad: JoypadState::default(),
             last_frame: Instant::now(),
+            save_path,
         }
+    }
+
+    /// Write battery-backed RAM to the `.sav` file, if applicable.
+    fn persist_save(&self) {
+        if let (Some(ram), Some(path)) = (self.game_boy.battery_ram(), &self.save_path) {
+            match std::fs::write(path, &ram) {
+                Ok(()) => eprintln!("[desktop] save written to {}", path.display()),
+                Err(e) => eprintln!("[desktop] failed to write save '{}': {e}", path.display()),
+            }
+        }
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.persist_save();
     }
 }
 
@@ -179,11 +199,35 @@ fn main() {
         })
     });
 
-    let game_boy = GameBoy::new(rom, boot_rom);
+    let mut game_boy = GameBoy::new(rom, boot_rom);
+
+    // Derive the .sav path from the ROM path (e.g. "game.gb" → "game.sav").
+    let save_path = {
+        let mut p = PathBuf::from(rom_path);
+        p.set_extension("sav");
+        p
+    };
+
+    // Load an existing save file if one is present.
+    if save_path.exists() {
+        match std::fs::read(&save_path) {
+            Ok(data) => {
+                game_boy.load_battery_ram(&data);
+                eprintln!("[desktop] save loaded from {}", save_path.display());
+            }
+            Err(e) => eprintln!(
+                "[desktop] failed to read save '{}': {e}",
+                save_path.display()
+            ),
+        }
+    }
+
+    // Only track the save path when the cartridge actually has a battery.
+    let save_path = game_boy.battery_ram().map(|_| save_path);
 
     let event_loop = EventLoop::new().expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(game_boy);
+    let mut app = App::new(game_boy, save_path);
     event_loop.run_app(&mut app).expect("event loop error");
 }

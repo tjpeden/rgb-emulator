@@ -15,10 +15,12 @@ pub struct MBC1 {
     ram_banking_mode: bool,
     /// External RAM enabled.
     ram_enabled: bool,
+    /// Whether this cartridge has a battery-backed RAM (type `0x03`).
+    has_battery: bool,
 }
 
 impl MBC1 {
-    pub fn new(rom: Vec<u8>) -> Self {
+    pub fn new(rom: Vec<u8>, has_battery: bool) -> Self {
         let ram = vec![0u8; 0x8000]; // 32 KiB max external RAM
         Self {
             rom,
@@ -27,6 +29,7 @@ impl MBC1 {
             bank2: 0,
             ram_banking_mode: false,
             ram_enabled: false,
+            has_battery,
         }
     }
 
@@ -107,6 +110,19 @@ impl MBC for MBC1 {
             _ => {}
         }
     }
+
+    fn battery_ram(&self) -> Option<&[u8]> {
+        if self.has_battery {
+            Some(&self.ram)
+        } else {
+            None
+        }
+    }
+
+    fn load_battery_ram(&mut self, data: &[u8]) {
+        let len = data.len().min(self.ram.len());
+        self.ram[..len].copy_from_slice(&data[..len]);
+    }
 }
 
 #[cfg(test)]
@@ -133,7 +149,7 @@ mod tests {
         // Bank 0 at 0x0000–0x3FFF must always map to physical bank 0,
         // regardless of the ROM bank register.
         let rom = make_rom(4);
-        let mut mbc = MBC1::new(rom);
+        let mut mbc = MBC1::new(rom, false);
         // Select bank 2
         mbc.write(0x2000, 2);
         assert_eq!(mbc.read(0x0000), 0, "bank 0 window must always be physical bank 0");
@@ -144,7 +160,7 @@ mod tests {
     fn rom_bank_n_window_selects_correct_bank() {
         // Writing N to 0x2000–0x3FFF makes bank N visible at 0x4000–0x7FFF.
         let rom = make_rom(8);
-        let mut mbc = MBC1::new(rom);
+        let mut mbc = MBC1::new(rom, false);
         for bank in 1u8..8 {
             mbc.write(0x2000, bank);
             assert_eq!(
@@ -161,7 +177,7 @@ mod tests {
         // Writing 0x00 to the ROM bank register is treated as 0x01 (bank 0
         // is never mapped to the 0x4000 window).
         let rom = make_rom(4);
-        let mut mbc = MBC1::new(rom);
+        let mut mbc = MBC1::new(rom, false);
         mbc.write(0x2000, 0x00);
         // Physical bank 1 contains 0x01 in every byte.
         assert_eq!(mbc.read(0x4000), 1, "writing 0x00 must remap to bank 1");
@@ -171,7 +187,7 @@ mod tests {
     fn bank_0x20_remaps_to_0x21() {
         // Banks 0x20, 0x40, 0x60 must also remap to 0x21, 0x41, 0x61.
         let rom = make_rom(64);
-        let mut mbc = MBC1::new(rom);
+        let mut mbc = MBC1::new(rom, false);
         // bank2 = 1, rom_bank_lo = 0 → combined 0x20 → remap to 0x21
         mbc.write(0x4000, 0x01); // bank2 = 1
         mbc.write(0x2000, 0x00); // lo = 0 → remap to 1
@@ -181,7 +197,7 @@ mod tests {
     #[test]
     fn bank_0x40_remaps_to_0x41() {
         let rom = make_rom(128);
-        let mut mbc = MBC1::new(rom);
+        let mut mbc = MBC1::new(rom, false);
         mbc.write(0x4000, 0x02); // bank2 = 2
         mbc.write(0x2000, 0x00); // lo = 0 → remap to 1
         assert_eq!(mbc.read(0x4000), 0x41, "bank 0x40 must remap to 0x41");
@@ -190,7 +206,7 @@ mod tests {
     #[test]
     fn bank_0x60_remaps_to_0x61() {
         let rom = make_rom(128);
-        let mut mbc = MBC1::new(rom);
+        let mut mbc = MBC1::new(rom, false);
         mbc.write(0x4000, 0x03); // bank2 = 3
         mbc.write(0x2000, 0x00); // lo = 0 → remap to 1
         assert_eq!(mbc.read(0x4000), 0x61, "bank 0x60 must remap to 0x61");
@@ -200,7 +216,7 @@ mod tests {
     fn upper_2_bits_extend_rom_bank() {
         // bank2 | lo selects the correct bank in ROM banking mode.
         let rom = make_rom(64);
-        let mut mbc = MBC1::new(rom);
+        let mut mbc = MBC1::new(rom, false);
         mbc.write(0x4000, 0x01); // bank2 = 1
         mbc.write(0x2000, 0x02); // lo = 2 → bank = 0x22
         assert_eq!(mbc.read(0x4000), 0x22, "bank2=1 + lo=2 must select bank 0x22");
@@ -210,13 +226,13 @@ mod tests {
 
     #[test]
     fn ram_disabled_by_default_returns_0xff() {
-        let mbc = MBC1::new(make_rom(2));
+        let mbc = MBC1::new(make_rom(2), false);
         assert_eq!(mbc.read(0xA000), 0xFF, "RAM reads when disabled must return 0xFF");
     }
 
     #[test]
     fn ram_enable_and_read_write() {
-        let mut mbc = MBC1::new(make_rom(2));
+        let mut mbc = MBC1::new(make_rom(2), false);
         mbc.write(0x0000, 0x0A); // enable RAM
         mbc.write(0xA000, 0xBE);
         assert_eq!(mbc.read(0xA000), 0xBE, "RAM write/read after enable must work");
@@ -224,7 +240,7 @@ mod tests {
 
     #[test]
     fn ram_disable_prevents_writes() {
-        let mut mbc = MBC1::new(make_rom(2));
+        let mut mbc = MBC1::new(make_rom(2), false);
         mbc.write(0x0000, 0x0A); // enable
         mbc.write(0xA000, 0xAB);
         mbc.write(0x0000, 0x00); // disable
@@ -235,7 +251,7 @@ mod tests {
 
     #[test]
     fn ram_banking_mode_selects_ram_bank() {
-        let mut mbc = MBC1::new(make_rom(2));
+        let mut mbc = MBC1::new(make_rom(2), false);
         mbc.write(0x0000, 0x0A); // enable RAM
         mbc.write(0x6000, 0x01); // RAM banking mode
         // Write a sentinel to bank 0 and bank 2 of RAM

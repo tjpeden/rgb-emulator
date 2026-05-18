@@ -15,6 +15,17 @@ pub use rom_only::ROMOnly;
 pub trait MBC {
     fn read(&self, addr: u16) -> u8;
     fn write(&mut self, addr: u16, value: u8);
+
+    /// Returns the full external RAM contents if this cartridge has a
+    /// battery-backed save, or `None` for cartridges without a battery.
+    fn battery_ram(&self) -> Option<&[u8]> {
+        None
+    }
+
+    /// Restores external RAM from previously-saved battery data.
+    ///
+    /// The default implementation is a no-op for cartridges without a battery.
+    fn load_battery_ram(&mut self, _data: &[u8]) {}
 }
 
 /// Parse the cartridge header, validate it, and return the appropriate MBC
@@ -40,7 +51,8 @@ pub fn from_rom(rom: Vec<u8>) -> Box<dyn MBC> {
                 "[cartridge] MBC1: \"{}\" (MBC type {:#04X})",
                 header.title, header.mbc_type
             );
-            Box::new(MBC1::new(rom))
+            let has_battery = header.mbc_type == 0x03;
+            Box::new(MBC1::new(rom, has_battery))
         }
         t => panic!("Unsupported MBC type: {:#04X}", t),
     }

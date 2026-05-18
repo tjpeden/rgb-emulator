@@ -155,4 +155,16 @@ impl GameBoy {
     pub fn framebuffer(&self) -> &[u8] {
         self.ppu.framebuffer()
     }
+
+    /// Returns the cartridge's battery-backed RAM, or `None` if the cartridge
+    /// has no battery. Use this to persist saves to disk on exit.
+    pub fn battery_ram(&self) -> Option<Vec<u8>> {
+        self.bus.battery_ram().map(|s| s.to_vec())
+    }
+
+    /// Restores the cartridge's battery-backed RAM from previously-saved data.
+    /// Call this after construction but before running any steps.
+    pub fn load_battery_ram(&mut self, data: &[u8]) {
+        self.bus.load_battery_ram(data);
+    }
 }
